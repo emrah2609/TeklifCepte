@@ -23,8 +23,13 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: 4. Android Lisanslarini Onayla ve Kutuphaneleri Kur
+      - name: 4. Imza Klasor Izinlerini Ac ve Flet Kur
         run: |
+          mkdir -p /home/runner/.android /home/runner/.config/.android
+          sudo chown -R $USER:$USER /home/runner/.android /home/runner/.config
+          chmod -R 777 /home/runner/.android /home/runner/.config/.android
+          keytool -genkey -v -keystore /home/runner/.config/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" || true
+          cp /home/runner/.config/.android/debug.keystore /home/runner/.android/debug.keystore || true
           yes | sudo $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
           pip install --upgrade pip
           pip install "flet[all]" fpdf2 Pillow
