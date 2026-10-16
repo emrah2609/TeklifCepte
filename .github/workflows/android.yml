@@ -23,29 +23,25 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: 4. Flutter SDK Kur
-        uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-
-      - name: 5. Flet ve Kutuphaneleri Kur
+      - name: 4. Android Lisanslarini Onayla ve Kutuphaneleri Kur
         run: |
+          yes | sudo $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
           pip install --upgrade pip
           pip install "flet[all]" fpdf2 Pillow
 
-      - name: 6. Android APK Derle (Telefon Testi Icin)
+      - name: 5. Android APK Derle (Otomatik Onayli)
         env:
           CI: true
         run: |
-          flet build apk --project "TeklifCepte Pro" --org "com.teklifcepte.pro"
+          yes | flet build apk --yes --project teklifcepte --org com.teklifcepte.pro
 
-      - name: 7. Google Play AAB Derle (Magaza Icin)
+      - name: 6. Google Play AAB Derle (Otomatik Onayli)
         env:
           CI: true
         run: |
-          flet build aab --project "TeklifCepte Pro" --org "com.teklifcepte.pro"
+          yes | flet build aab --yes --project teklifcepte --org com.teklifcepte.pro
 
-      - name: 8. Hazir Paketleri Indirmeye Sun
+      - name: 7. Hazir Paketleri Indirmeye Sun
         uses: actions/upload-artifact@v4
         with:
           name: TeklifCepte-Android-Paketleri
