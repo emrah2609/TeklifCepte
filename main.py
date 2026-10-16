@@ -2,13 +2,15 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import threading
+import http.server
+import socketserver
 import urllib.parse
 import webbrowser
 from datetime import datetime
 import flet as ft
 from fpdf import FPDF
 
-# Masaüstünde tkinter çalışır, Android telefonda hata vermemesi için korumalı yüklenir
 try:
     import tkinter as tk
     from tkinter import filedialog
@@ -27,6 +29,28 @@ if not VERI_DIZINI:
 DB_FILE = os.path.join(VERI_DIZINI, "teklifcepte.db")
 LOGO_KLASORU = os.path.join(VERI_DIZINI, "logolar")
 ARSIV_KLASORU = os.path.join(VERI_DIZINI, "teklifler_arsiv")
+
+PDF_PORT = [0]
+
+# --- MOBİLDE PDF AÇMAK İÇİN DAHİLİ YEREL SUNUCU ---
+def pdf_sunucu_baslat():
+    if PDF_PORT[0] != 0:
+        return PDF_PORT[0]
+
+    class SessizHandler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=ARSIV_KLASORU, **kwargs)
+        def log_message(self, format, *args):
+            pass
+
+    try:
+        httpd = socketserver.TCPServer(("127.0.0.1", 0), SessizHandler)
+        PDF_PORT[0] = httpd.server_address[1]
+        t = threading.Thread(target=httpd.serve_forever, daemon=True)
+        t.start()
+    except Exception:
+        pass
+    return PDF_PORT[0]
 
 
 # --- 1. VERİTABANI KURULUMU ---
@@ -102,27 +126,43 @@ def cihazdan_logo_yukle():
     return None
 
 
-# --- 3. PDF OLUŞTURMA MOTORU (ANDROID & WINDOWS TÜRKÇE FONT DESTEKLİ) ---
+# --- TÜRKÇE KARAKTER GÜVENLİK FİLTRESİ (FONT BULUNAMAZSA ÇÖKMEYİ ÖNLER) ---
+def tr_temizle(metin):
+    harita = str.maketrans("ğĞıİöÖüÜşŞçÇ", "gGiIoOuUsScC")
+    return str(metin).translate(harita)
+
+
+# --- 3. PDF OLUŞTURMA MOTORU ---
 def create_quote_pdf(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tutar, genel_toplam, gecerlilik_suresi):
     pdf = FPDF()
     pdf.add_page()
     
-    # Önce klasördeki gömülü fonta bak (Android için), yoksa Windows fontuna bak
-    yerel_font = os.path.join(os.path.dirname(os.path.abspath(__file__)), "font.ttf")
-    yerel_bold = os.path.join(os.path.dirname(os.path.abspath(__file__)), "font_bold.ttf")
+    baz_dizin = os.path.dirname(os.path.abspath(__file__))
+    yerel_font = os.path.join(baz_dizin, "font.ttf")
+    yerel_bold = os.path.join(baz_dizin, "font_bold.ttf")
     win_font = "C:/Windows/Fonts/arial.ttf"
     win_bold = "C:/Windows/Fonts/arialbd.ttf"
 
-    if os.path.exists(yerel_font):
-        pdf.add_font("TRFont", "", yerel_font)
-        pdf.add_font("TRFont", "B", yerel_bold if os.path.exists(yerel_bold) else yerel_font)
-        font_name = "TRFont"
-    elif os.path.exists(win_font):
-        pdf.add_font("TRFont", "", win_font)
-        pdf.add_font("TRFont", "B", win_bold if os.path.exists(win_bold) else win_font)
-        font_name = "TRFont"
-    else:
+    tr_destekli = False
+    font_name = "Helvetica"
+
+    try:
+        if os.path.exists(yerel_font):
+            pdf.add_font("TRFont", "", yerel_font)
+            pdf.add_font("TRFont", "B", yerel_bold if os.path.exists(yerel_bold) else yerel_font)
+            font_name = "TRFont"
+            tr_destekli = True
+        elif os.path.exists(win_font):
+            pdf.add_font("TRFont", "", win_font)
+            pdf.add_font("TRFont", "B", win_bold if os.path.exists(win_bold) else win_font)
+            font_name = "TRFont"
+            tr_destekli = True
+    except Exception:
         font_name = "Helvetica"
+        tr_destekli = False
+
+    def yaz(m):
+        return str(m) if tr_destekli else tr_temizle(m)
 
     # 1. SOL ÜST KÖŞEYE KURUM LOGOSU
     logo_yolu = ayar.get("logo_yolu", "").strip()
@@ -138,25 +178,25 @@ def create_quote_pdf(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran,
     pdf.set_xy(110, 12)
     pdf.set_font(font_name, "B", 11)
     pdf.set_text_color(37, 99, 235)
-    pdf.cell(90, 6, "RESMİ FİYAT TEKLİFİ", align="R")
+    pdf.cell(90, 6, yaz("RESMİ FİYAT TEKLİFİ"), align="R")
 
     pdf.set_xy(110, 18)
     pdf.set_font(font_name, "", 10)
     pdf.set_text_color(80, 80, 80)
-    pdf.cell(90, 6, f"Tarih: {datetime.now().strftime('%d.%m.%Y')}", align="R")
+    pdf.cell(90, 6, yaz(f"Tarih: {datetime.now().strftime('%d.%m.%Y')}"), align="R")
 
     # 3. FİRMA İSMİ VE TELEFON (ALT SATIRDA VE SAYFA ORTASINDA)
     firma_y = 33 if logo_basildi else 22
     pdf.set_xy(10, firma_y)
     pdf.set_text_color(30, 58, 138)
     pdf.set_font(font_name, "B", 16)
-    f_adi_metni = ayar["firma_adi"].upper() if ayar["firma_adi"] else "FİRMA ADI"
-    pdf.cell(0, 8, f_adi_metni, new_x="LMARGIN", new_y="NEXT", align="C")
+    f_adi_metni = ayar["firma_adi"].upper() if ayar["firma_adi"] else "FIRMA ADI"
+    pdf.cell(0, 8, yaz(f_adi_metni), new_x="LMARGIN", new_y="NEXT", align="C")
 
     pdf.set_xy(10, firma_y + 8)
     pdf.set_text_color(70, 70, 70)
     pdf.set_font(font_name, "", 10)
-    pdf.cell(0, 6, f"İletişim / Tel: {ayar['firma_tel']}", new_x="LMARGIN", new_y="NEXT", align="C")
+    pdf.cell(0, 6, yaz(f"İletişim / Tel: {ayar['firma_tel']}"), new_x="LMARGIN", new_y="NEXT", align="C")
 
     cizgi_y = firma_y + 16
     pdf.set_draw_color(200, 200, 200)
@@ -167,23 +207,23 @@ def create_quote_pdf(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran,
     pdf.set_fill_color(241, 245, 249)
     pdf.set_text_color(0, 0, 0)
     pdf.set_font(font_name, "B", 12)
-    pdf.cell(0, 10, f"  SAYIN: {musteri_adi}", new_x="LMARGIN", new_y="NEXT", fill=True)
+    pdf.cell(0, 10, yaz(f"  SAYIN: {musteri_adi}"), new_x="LMARGIN", new_y="NEXT", fill=True)
     pdf.ln(4)
 
     # Tablo Başlığı
     pdf.set_fill_color(30, 58, 138)
     pdf.set_text_color(255, 255, 255)
     pdf.set_font(font_name, "B", 11)
-    pdf.cell(95, 9, " Hizmet / Malzeme Açıklaması", border=1, fill=True)
-    pdf.cell(25, 9, "Miktar", border=1, align="C", fill=True)
-    pdf.cell(35, 9, "Birim Fiyat", border=1, align="R", fill=True)
-    pdf.cell(35, 9, "Toplam", border=1, new_x="LMARGIN", new_y="NEXT", align="R", fill=True)
+    pdf.cell(95, 9, yaz(" Hizmet / Malzeme Açıklaması"), border=1, fill=True)
+    pdf.cell(25, 9, yaz("Miktar"), border=1, align="C", fill=True)
+    pdf.cell(35, 9, yaz("Birim Fiyat"), border=1, align="R", fill=True)
+    pdf.cell(35, 9, yaz("Toplam"), border=1, new_x="LMARGIN", new_y="NEXT", align="R", fill=True)
 
     # Kalemler
     pdf.set_text_color(0, 0, 0)
     pdf.set_font(font_name, "", 10)
     for k in kalemler:
-        pdf.cell(95, 8, f" {k['ad']}", border=1)
+        pdf.cell(95, 8, yaz(f" {k['ad']}"), border=1)
         pdf.cell(25, 8, str(k['miktar']), border=1, align="C")
         pdf.cell(35, 8, f"{k['fiyat']:,.2f} TL", border=1, align="R")
         pdf.cell(35, 8, f"{k['toplam']:,.2f} TL", border=1, new_x="LMARGIN", new_y="NEXT", align="R")
@@ -191,19 +231,19 @@ def create_quote_pdf(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran,
     # Hesap Özeti
     pdf.ln(3)
     pdf.set_font(font_name, "", 10)
-    pdf.cell(155, 7, "Ara Toplam:", align="R")
+    pdf.cell(155, 7, yaz("Ara Toplam:"), align="R")
     pdf.cell(35, 7, f"{ara_toplam:,.2f} TL", border=1, new_x="LMARGIN", new_y="NEXT", align="R")
 
     if iskonto > 0:
-        pdf.cell(155, 7, "İskonto (İndirim):", align="R")
+        pdf.cell(155, 7, yaz("İskonto (İndirim):"), align="R")
         pdf.cell(35, 7, f"-{iskonto:,.2f} TL", border=1, new_x="LMARGIN", new_y="NEXT", align="R")
 
     if kdv_oran > 0:
-        pdf.cell(155, 7, f"KDV (%{kdv_oran}):", align="R")
+        pdf.cell(155, 7, yaz(f"KDV (%{kdv_oran}):"), align="R")
         pdf.cell(35, 7, f"{kdv_tutar:,.2f} TL", border=1, new_x="LMARGIN", new_y="NEXT", align="R")
 
     pdf.set_font(font_name, "B", 12)
-    pdf.cell(155, 10, "GENEL TOPLAM:", align="R")
+    pdf.cell(155, 10, yaz("GENEL TOPLAM:"), align="R")
     pdf.set_fill_color(220, 252, 231)
     pdf.cell(35, 10, f"{genel_toplam:,.2f} TL", border=1, new_x="LMARGIN", new_y="NEXT", align="R", fill=True)
 
@@ -215,15 +255,15 @@ def create_quote_pdf(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran,
     pdf.set_fill_color(241, 245, 249)
     pdf.set_font(font_name, "B", 10)
     pdf.set_text_color(30, 58, 138)
-    pdf.cell(0, 8, f"  Ödeme İçin IBAN: {ayar['firma_iban']}", new_x="LMARGIN", new_y="NEXT", fill=True)
+    pdf.cell(0, 8, yaz(f"  Ödeme İçin IBAN: {ayar['firma_iban']}"), new_x="LMARGIN", new_y="NEXT", fill=True)
 
-    # --- ALT BÖLÜM: SOLDA GEÇERLİLİK SÜRESİ, SAĞ ALTTA KAŞE / İMZA ---
+    # --- ALT BÖLÜM ---
     alt_y = pdf.get_y() + 6
 
     pdf.set_xy(10, alt_y)
     pdf.set_font(font_name, "B", 10)
     pdf.set_text_color(180, 83, 9)
-    pdf.cell(112, 6, f"Teklif Geçerlilik Süresi: {gecerlilik_suresi}", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(112, 6, yaz(f"Teklif Geçerlilik Süresi: {gecerlilik_suresi}"), new_x="LMARGIN", new_y="NEXT")
 
     kutu_x = 130
     kutu_w = 70
@@ -235,12 +275,12 @@ def create_quote_pdf(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran,
     pdf.set_xy(kutu_x, alt_y + 2)
     pdf.set_font(font_name, "B", 10)
     pdf.set_text_color(30, 58, 138)
-    pdf.cell(kutu_w, 6, "YETKİLİ KAŞE / İMZA", align="C")
+    pdf.cell(kutu_w, 6, yaz("YETKİLİ KAŞE / İMZA"), align="C")
 
     pdf.set_xy(kutu_x, alt_y + 8)
     pdf.set_font(font_name, "", 8)
     pdf.set_text_color(90, 90, 90)
-    pdf.cell(kutu_w, 5, f_adi_metni[:32], align="C")
+    pdf.cell(kutu_w, 5, yaz(f_adi_metni[:32]), align="C")
 
     pdf.set_draw_color(210, 215, 220)
     pdf.line(kutu_x + 10, alt_y + 26, kutu_x + kutu_w - 10, alt_y + 26)
@@ -250,9 +290,9 @@ def create_quote_pdf(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran,
         pdf.set_y(sag_bitis_y + 6)
         pdf.set_font(font_name, "B", 9)
         pdf.set_text_color(180, 83, 9)
-        pdf.cell(0, 6, "Bu fiyat teklifi TeklifCepte uygulaması ile ücretsiz hazırlanmıştır.", align="C")
+        pdf.cell(0, 6, yaz("Bu fiyat teklifi TeklifCepte uygulaması ile ücretsiz hazırlanmıştır."), align="C")
 
-    temiz_isim = "".join(c if c.isalnum() else "_" for c in musteri_adi)
+    temiz_isim = "".join(c if c.isalnum() else "_" for c in tr_temizle(musteri_adi))
     zaman_eki = datetime.now().strftime("%Y%m%d_%H%M%S")
     dosya_adi = os.path.join(ARSIV_KLASORU, f"Teklif_{temiz_isim}_{zaman_eki}.pdf")
     pdf.output(dosya_adi)
@@ -269,20 +309,35 @@ def ozel_buton(yazi, tiklama, renk="#1E3A8A", padding_degeri=10):
     )
 
 
-# --- 4. ANA UYGULAMA EKRANI (MOBİL + MASAÜSTÜ DUYARLI) ---
+# --- 4. ANA UYGULAMA EKRANI (SONSUZ KAYDIRMA HATASI GİDERİLMİŞ MOBİL UYUMLU) ---
 def main(page: ft.Page):
     init_db()
+    pdf_sunucu_baslat()
     page.title = "TeklifCepte Pro"
-    if os.path.exists("ikon.ico"):
-        page.window.icon = os.path.abspath("ikon.ico")
-    page.window.width = 1080
-    page.window.height = 820
     page.theme_mode = ft.ThemeMode.LIGHT
-    page.padding = 16
+    page.padding = 12
     page.scroll = ft.ScrollMode.AUTO
 
     kalemler = []
     secili_kdv = [20]
+
+    def link_ac(url):
+        try:
+            page.launch_url(url)
+        except Exception:
+            webbrowser.open(url)
+
+    def cihazda_pdf_ac(dosya_yolu):
+        if not dosya_yolu or not os.path.exists(dosya_yolu):
+            durum_mesaji.value = "⚠️ PDF dosyası bulunamadı!"
+            page.update()
+            return
+        if os.name == "nt":
+            os.startfile(dosya_yolu)
+        else:
+            port = pdf_sunucu_baslat()
+            dosya_ismi = urllib.parse.quote(os.path.basename(dosya_yolu))
+            link_ac(f"http://127.0.0.1:{port}/{dosya_ismi}")
 
     def get_ayarlar():
         conn = sqlite3.connect(DB_FILE)
@@ -300,11 +355,13 @@ def main(page: ft.Page):
             "gecerlilik": r[6] or "30 Gün"
         }
 
-    ust_logo_kutusu = ft.Container(width=56, height=56, bgcolor="#F1F5F9", border_radius=8, padding=4)
-    ust_firma_baslik = ft.Text("", size=18, weight="bold", color="#1E3A8A")
-    durum_mesaji = ft.Text("", color="#15803D", weight="bold", size=14)
-    paket_etiketi = ft.Text("", weight="bold", size=13)
-    icerik_alani = ft.Column(spacing=12)
+    ust_logo_kutusu = ft.Container(width=50, height=50, bgcolor="#F1F5F9", border_radius=8, padding=4)
+    ust_firma_baslik = ft.Text("", size=17, weight="bold", color="#1E3A8A")
+    durum_mesaji = ft.Text("", color="#15803D", weight="bold", size=13)
+    paket_etiketi = ft.Text("", weight="bold", size=12)
+    
+    # tight=True sayesinde mobilde sonsuz boşluk oluşmaz!
+    icerik_alani = ft.Column(spacing=10, tight=True)
 
     def hizli_logo_sec(e):
         yeni_yol = cihazdan_logo_yukle()
@@ -317,22 +374,22 @@ def main(page: ft.Page):
             durum_mesaji.value = "✅ Kurum logonuz yüklendi!"
             page.update()
         elif not TKINTER_VAR:
-            durum_mesaji.value = "ℹ️ Mobil cihazda logo ayarlarını '5. Firma & Pro Paket' sekmesinden yapabilirsiniz."
+            durum_mesaji.value = "ℹ️ Mobil sürümde firma bilgilerinizi '5. Firma & Pro' sekmesinden düzenleyebilirsiniz."
             page.update()
 
     # --- EKRAN 1: YENİ TEKLİF HAZIRLA ---
     ilk_ayar = get_ayarlar()
-    musteri_adi = ft.TextField(label="Müşteri Adı Soyadı / Firma", width=300)
-    musteri_tel = ft.TextField(label="Müşteri WhatsApp No (905...)", width=240)
-    urun_adi = ft.TextField(label="Hizmet veya Malzeme Adı", width=280)
+    musteri_adi = ft.TextField(label="Müşteri Adı Soyadı / Firma", width=310)
+    musteri_tel = ft.TextField(label="Müşteri WhatsApp No (905...)", width=260)
+    urun_adi = ft.TextField(label="Hizmet veya Malzeme Adı", width=260)
     miktar = ft.TextField(label="Miktar", value="1", width=90)
     birim_fiyat = ft.TextField(label="Birim Fiyat (TL)", width=140)
-    iskonto_input = ft.TextField(label="İskonto / İndirim (TL)", value="0", width=160)
-    gecerlilik_input = ft.TextField(label="Teklif Geçerlilik Süresi", value=ilk_ayar["gecerlilik"], width=180)
+    iskonto_input = ft.TextField(label="İskonto (TL)", value="0", width=140)
+    gecerlilik_input = ft.TextField(label="Geçerlilik Süresi", value=ilk_ayar["gecerlilik"], width=160)
 
-    kalem_tablosu = ft.Column(spacing=5)
-    ozet_text = ft.Text("Genel Toplam: 0.00 TL", size=18, weight="bold", color="#1E3A8A")
-    hazir_butonlar_row = ft.Row(wrap=True, spacing=8)
+    kalem_tablosu = ft.Column(spacing=6, tight=True)
+    ozet_text = ft.Text("Genel Toplam: 0.00 TL", size=16, weight="bold", color="#1E3A8A")
+    hazir_butonlar_row = ft.Row(wrap=True, spacing=6)
 
     def hesapla():
         ara = sum(k["toplam"] for k in kalemler)
@@ -351,9 +408,9 @@ def main(page: ft.Page):
         ust_firma_baslik.value = f"{f_ad}"
         
         if ayar["logo_yolu"] and os.path.exists(ayar["logo_yolu"]):
-            ust_logo_kutusu.content = ft.Image(src=ayar["logo_yolu"], width=48, height=48)
+            ust_logo_kutusu.content = ft.Image(src=ayar["logo_yolu"], width=42, height=42)
         else:
-            ust_logo_kutusu.content = ft.Text("Logo", size=11, color="#64748B")
+            ust_logo_kutusu.content = ft.Text("🏢", size=22)
 
         if ayar["pro_mu"] == 1:
             paket_etiketi.value = "💎 PRO SÜRÜM (Sınırsız)"
@@ -372,14 +429,17 @@ def main(page: ft.Page):
                     guncelle_teklif_ekrani()
                 return _sil
 
+            # Mobilde çökmemesi için expand=True olmadan temiz kart yapısı
             kalem_tablosu.controls.append(
                 ft.Container(
                     content=ft.Row([
-                        ft.Text(f"{i+1}. {k['ad']}", expand=True, weight="bold"),
-                        ft.Text(f"{k['miktar']} x {k['fiyat']:,.2f} TL = {k['toplam']:,.2f} TL", weight="bold"),
-                        ozel_buton("🗑️", sil_yap(i), "#DC2626", 6)
-                    ], wrap=True),
-                    padding=8, bgcolor="#F3F4F6", border_radius=6
+                        ft.Column([
+                            ft.Text(f"{i+1}. {k['ad']}", weight="bold", size=14),
+                            ft.Text(f"{k['miktar']:g} Adet x {k['fiyat']:,.2f} TL = {k['toplam']:,.2f} TL", color="#1E3A8A", weight="bold", size=13),
+                        ], spacing=2, tight=True),
+                        ozel_buton("🗑️ Sil", sil_yap(i), "#DC2626", 7)
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True),
+                    padding=10, bgcolor="#F1F5F9", border_radius=8
                 )
             )
         ara, isk, kdv_t, genel = hesapla()
@@ -395,6 +455,7 @@ def main(page: ft.Page):
             def hizli_ekle(a=ad, f=fiy):
                 def _ekle(e):
                     kalemler.append({"ad": a, "miktar": 1.0, "fiyat": f, "toplam": f})
+                    durum_mesaji.value = f"✅ '{a}' listeye eklendi."
                     guncelle_teklif_ekrani()
                 return _ekle
             hazir_butonlar_row.controls.append(ozel_buton(f"⚡ + {ad} ({fiy:,.0f} TL)", hizli_ekle(), "#475569", 8))
@@ -408,11 +469,12 @@ def main(page: ft.Page):
         try:
             m = float(miktar.value.replace(",", "."))
             f = float(birim_fiyat.value.replace(",", "."))
-            kalemler.append({"ad": urun_adi.value, "miktar": m, "fiyat": f, "toplam": m * f})
+            eklenen_ad = urun_adi.value.strip()
+            kalemler.append({"ad": eklenen_ad, "miktar": m, "fiyat": f, "toplam": m * f})
             urun_adi.value = ""
             birim_fiyat.value = ""
             miktar.value = "1"
-            durum_mesaji.value = ""
+            durum_mesaji.value = f"✅ '{eklenen_ad}' teklife eklendi!"
             guncelle_teklif_ekrani()
         except ValueError:
             durum_mesaji.value = "⚠️ Miktar ve fiyata sadece sayı girin!"
@@ -433,14 +495,14 @@ def main(page: ft.Page):
                 durum_mesaji.value = "🔒 Ücretsiz 5 PDF hakkınız doldu! '5. Firma & Pro' sekmesinden Pro'ya geçin."
                 page.update()
                 return
-            if not musteri_adi.value or not kalemler:
+            if not musteri_adi.value.strip() or not kalemler:
                 durum_mesaji.value = "⚠️ Lütfen Müşteri Adı girin ve en az 1 hizmet kalemi ekleyin!"
                 page.update()
                 return
 
             ara, isk, kdv_t, genel = hesapla()
             dosya_yolu = create_quote_pdf(
-                ayar, musteri_adi.value, kalemler, ara, isk, secili_kdv[0], kdv_t, genel,
+                ayar, musteri_adi.value.strip(), kalemler, ara, isk, secili_kdv[0], kdv_t, genel,
                 gecerlilik_input.value.strip()
             )
 
@@ -458,37 +520,43 @@ def main(page: ft.Page):
             conn.commit()
             conn.close()
 
-            durum_mesaji.value = f"✅ PDF Hazırlandı ve Arşivlendi: {os.path.basename(dosya_yolu)}"
+            durum_mesaji.value = f"✅ PDF Hazırlandı ve Açılıyor: {os.path.basename(dosya_yolu)}"
             guncelle_teklif_ekrani()
-            if os.name == "nt":
-                os.startfile(dosya_yolu)
+            cihazda_pdf_ac(dosya_yolu)
         except Exception as ex:
             durum_mesaji.value = f"⚠️ PDF hatası: {ex}"
             page.update()
 
     def whatsapp_gonder(e):
+        if not musteri_adi.value.strip() or not kalemler:
+            durum_mesaji.value = "⚠️ WhatsApp gönderimi için müşteri adı ve kalem ekleyin!"
+            page.update()
+            return
         _, _, _, genel = hesapla()
         ayar = get_ayarlar()
-        tel = "".join(filter(str.isdigit, musteri_tel.value))
+        tel = "".join(filter(str.isdigit, musteri_tel.value or ""))
         if tel.startswith("0"):
             tel = "9" + tel
+        kalem_listesi = "\n".join(f"• {k['ad']}: {k['toplam']:,.2f} TL" for k in kalemler)
         mesaj = (
-            f"Sayın *{musteri_adi.value}*,\n"
-            f"*{ayar['firma_adi']}* olarak hazırladığımız fiyat teklifi genel toplamı *{genel:,.2f} TL*'dir.\n"
+            f"Sayın *{musteri_adi.value.strip()}*,\n"
+            f"*{ayar['firma_adi']}* olarak hazırladığımız fiyat teklifi:\n\n"
+            f"{kalem_listesi}\n\n"
+            f"*GENEL TOPLAM: {genel:,.2f} TL*\n"
             f"Geçerlilik Süresi: {gecerlilik_input.value}\n"
-            f"Detaylı PDF teklifimizi ekte bilgilerinize sunarız."
+            f"IBAN: {ayar['firma_iban']}"
         )
-        webbrowser.open(f"https://wa.me/{tel}?text={urllib.parse.quote(mesaj)}")
+        link_ac(f"https://wa.me/{tel}?text={urllib.parse.quote(mesaj)}")
 
     def cariye_aktar(e):
-        if not musteri_adi.value or not kalemler:
+        if not musteri_adi.value.strip() or not kalemler:
             durum_mesaji.value = "⚠️ Cariye kaydetmek için müşteri adı ve kalem girin!"
             page.update()
             return
         _, _, _, genel = hesapla()
         conn = sqlite3.connect(DB_FILE)
         conn.execute("INSERT INTO cariler (musteri, tel, toplam_borc, odenen, tarih) VALUES (?, ?, ?, 0, ?)",
-                     (musteri_adi.value, musteri_tel.value, genel, datetime.now().strftime("%d.%m.%Y")))
+                     (musteri_adi.value.strip(), musteri_tel.value.strip(), genel, datetime.now().strftime("%d.%m.%Y")))
         conn.commit()
         conn.close()
         durum_mesaji.value = f"✅ {musteri_adi.value} ({genel:,.2f} TL) Cari Hesaplara kaydedildi!"
@@ -500,11 +568,11 @@ def main(page: ft.Page):
         hazir_kalemleri_yukle()
         guncelle_teklif_ekrani()
         icerik_alani.controls.extend([
-            ft.Text("1. Müşteri Bilgileri", weight="bold", size=16),
+            ft.Text("1. Müşteri Bilgileri", weight="bold", size=15),
             ft.Row([musteri_adi, musteri_tel], wrap=True),
-            ft.Text("2. Kayıtlı Hizmetlerden Tek Tıkla Ekle:", weight="bold", size=14, color="#475569"),
+            ft.Text("2. Kayıtlı Hizmetlerden Tek Tıkla Ekle:", weight="bold", size=13, color="#475569"),
             hazir_butonlar_row,
-            ft.Row([urun_adi, miktar, birim_fiyat, ozel_buton("➕ Ekle", kalem_ekle, "#2563EB")], wrap=True),
+            ft.Row([urun_adi, miktar, birim_fiyat, ozel_buton("➕ Kalem Ekle", kalem_ekle, "#2563EB", 12)], wrap=True),
             kalem_tablosu,
             ft.Row([
                 iskonto_input,
@@ -516,14 +584,14 @@ def main(page: ft.Page):
             ft.Divider(),
             ozet_text,
             ft.Row([
-                ozel_buton("📄 PDF Oluştur ve Arşivle", pdf_olustur_tikla, "#1E40AF", 12),
+                ozel_buton("📄 PDF Oluştur ve Aç", pdf_olustur_tikla, "#1E40AF", 12),
                 ozel_buton("💬 WhatsApp'tan Gönder", whatsapp_gonder, "#16A34A", 12),
-                ozel_buton("📒 İşi Onayla (Cariye Kaydet)", cariye_aktar, "#D97706", 12),
-            ], wrap=True, spacing=10)
+                ozel_buton("📒 Cariye Kaydet", cariye_aktar, "#D97706", 12),
+            ], wrap=True, spacing=8)
         ])
         page.update()
 
-    arama_kutusu = ft.TextField(label="🔍 Müşteri Adına Göre Ara...", width=320)
+    arama_kutusu = ft.TextField(label="🔍 Müşteri Adına Göre Ara...", width=300)
 
     def goster_gecmis_teklifler(e=None):
         icerik_alani.controls.clear()
@@ -540,18 +608,14 @@ def main(page: ft.Page):
         arama_kutusu.on_change = lambda ev: goster_gecmis_teklifler()
 
         icerik_alani.controls.extend([
-            ft.Row([
-                ft.Text(f"📂 Geçmiş Teklifler ({len(filtreli)} Adet)", size=18, weight="bold", color="#1E3A8A"),
-                ft.Text(f"Toplam Hacim: {toplam_teklif_tutari:,.2f} TL", size=15, weight="bold", color="#047857"),
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True),
+            ft.Text(f"📂 Geçmiş Teklifler ({len(filtreli)} Adet) | Toplam: {toplam_teklif_tutari:,.2f} TL", size=16, weight="bold", color="#1E3A8A"),
             arama_kutusu,
         ])
 
         for tid, mus, tel, top, tar, yol, ozet in filtreli:
             def pdf_ac(dosya=yol):
                 def _ac(ev):
-                    if dosya and os.path.exists(dosya) and os.name == "nt":
-                        os.startfile(dosya)
+                    cihazda_pdf_ac(dosya)
                 return _ac
 
             def arsivden_wp(m=mus, t=tel, tutar=top):
@@ -561,7 +625,7 @@ def main(page: ft.Page):
                     if no.startswith("0"):
                         no = "9" + no
                     msj = f"Sayın *{m}*,\n*{ayar['firma_adi']}* olarak hazırladığımız *{tutar:,.2f} TL* tutarındaki fiyat teklifimizi bilgilerinize sunarız."
-                    webbrowser.open(f"https://wa.me/{no}?text={urllib.parse.quote(msj)}")
+                    link_ac(f"https://wa.me/{no}?text={urllib.parse.quote(msj)}")
                 return _wp
 
             def arsivden_cariye(m=mus, t=tel, tutar=top):
@@ -588,19 +652,17 @@ def main(page: ft.Page):
 
             icerik_alani.controls.append(
                 ft.Container(
-                    content=ft.Row([
-                        ft.Column([
-                            ft.Text(f"📄 {mus} ({tel or 'Tel Yok'}) | 🕒 {tar}", weight="bold", size=14, color="#1E3A8A"),
-                            ft.Text(f"Kalemler: {ozet}", size=12, color="#475569"),
-                            ft.Text(f"Tutar: {top:,.2f} TL", weight="bold", size=14, color="#047857"),
-                        ], expand=True, spacing=3),
+                    content=ft.Column([
+                        ft.Text(f"📄 {mus} ({tel or 'Tel Yok'}) | 🕒 {tar}", weight="bold", size=14, color="#1E3A8A"),
+                        ft.Text(f"Kalemler: {ozet}", size=12, color="#475569"),
+                        ft.Text(f"Teklif Tutarı: {top:,.2f} TL", weight="bold", size=14, color="#047857"),
                         ft.Row([
-                            ozel_buton("📄 Aç", pdf_ac(), "#1E40AF", 8),
+                            ozel_buton("📄 PDF İndir/Aç", pdf_ac(), "#1E40AF", 8),
                             ozel_buton("💬 WP", arsivden_wp(), "#16A34A", 8),
                             ozel_buton("📒 Cariye At", arsivden_cariye(), "#D97706", 8),
-                            ozel_buton("🗑️", arsiv_sil(), "#DC2626", 8),
+                            ozel_buton("🗑️ Sil", arsiv_sil(), "#DC2626", 8),
                         ], wrap=True, spacing=6)
-                    ], wrap=True),
+                    ], spacing=4, tight=True),
                     padding=10, bgcolor="#F1F5F9", border_radius=8
                 )
             )
@@ -616,13 +678,13 @@ def main(page: ft.Page):
 
         toplam_kalan = sum(r[3] - r[4] for r in kayitlar)
         icerik_alani.controls.append(
-            ft.Text(f"💰 Toplam Bekleyen Alacak: {toplam_kalan:,.2f} TL", size=20, weight="bold", color="#B91C1C")
+            ft.Text(f"💰 Toplam Bekleyen Alacak: {toplam_kalan:,.2f} TL", size=18, weight="bold", color="#B91C1C")
         )
 
         for r in kayitlar:
             cid, mus, tel, borc, odenen, tar = r
             kalan = borc - odenen
-            tahsilat_kutusu = ft.TextField(label="Tahsilat (TL)", width=120)
+            tahsilat_kutusu = ft.TextField(label="Tahsilat (TL)", width=130)
 
             def odeme_al(kayit_id=cid, kutu=tahsilat_kutusu):
                 def _ode(ev):
@@ -645,11 +707,11 @@ def main(page: ft.Page):
                         durum_mesaji.value = "🔒 WhatsApp Hatırlatma PRO özelliğidir! Ayarlardan Pro'yu açın."
                         page.update()
                         return
-                    no = "".join(filter(str.isdigit, t))
+                    no = "".join(filter(str.isdigit, t or ""))
                     if no.startswith("0"):
                         no = "9" + no
                     msj = f"Sayın *{m}*, *{ayar['firma_adi']}* hesabınızda *{k:,.2f} TL* kalan bakiyeniz bulunmaktadır. IBAN: {ayar['firma_iban']}"
-                    webbrowser.open(f"https://wa.me/{no}?text={urllib.parse.quote(msj)}")
+                    link_ac(f"https://wa.me/{no}?text={urllib.parse.quote(msj)}")
                 return _wp
 
             def cari_sil(kayit_id=cid):
@@ -663,16 +725,16 @@ def main(page: ft.Page):
 
             icerik_alani.controls.append(
                 ft.Container(
-                    content=ft.Row([
-                        ft.Column([
-                            ft.Text(f"👤 {mus} ({tel}) - {tar}", weight="bold", size=14),
-                            ft.Text(f"Toplam: {borc:,.2f} TL | Ödenen: {odenen:,.2f} TL | KALAN: {kalan:,.2f} TL", color="#B91C1C", weight="bold"),
-                        ], expand=True),
-                        tahsilat_kutusu,
-                        ozel_buton("💵 Düş", odeme_al(), "#15803D", 8),
-                        ozel_buton("📲 WP Hatırlat", wp_hatirlat(), "#0D9488", 8),
-                        ozel_buton("🗑️", cari_sil(), "#DC2626", 8),
-                    ], wrap=True),
+                    content=ft.Column([
+                        ft.Text(f"👤 {mus} ({tel}) - {tar}", weight="bold", size=14),
+                        ft.Text(f"Toplam: {borc:,.2f} TL | Ödenen: {odenen:,.2f} TL | KALAN: {kalan:,.2f} TL", color="#B91C1C", weight="bold", size=13),
+                        ft.Row([
+                            tahsilat_kutusu,
+                            ozel_buton("💵 Tahsilat Düş", odeme_al(), "#15803D", 8),
+                            ozel_buton("📲 WP Hatırlat", wp_hatirlat(), "#0D9488", 8),
+                            ozel_buton("🗑️", cari_sil(), "#DC2626", 8),
+                        ], wrap=True, spacing=6)
+                    ], spacing=4, tight=True),
                     padding=10, bgcolor="#FEF3C7", border_radius=8
                 )
             )
@@ -680,7 +742,7 @@ def main(page: ft.Page):
 
     def goster_fiyat_listesi(e=None):
         icerik_alani.controls.clear()
-        yeni_ad = ft.TextField(label="Yeni Hizmet / Malzeme Adı", width=300)
+        yeni_ad = ft.TextField(label="Yeni Hizmet / Malzeme Adı", width=260)
         yeni_fiyat = ft.TextField(label="Birim Fiyatı (TL)", width=140)
 
         def yeni_kaydet(ev):
@@ -694,7 +756,7 @@ def main(page: ft.Page):
             except ValueError:
                 pass
 
-        icerik_alani.controls.append(ft.Text("📦 Hazır Hizmet & Malzeme Listem", size=18, weight="bold"))
+        icerik_alani.controls.append(ft.Text("📦 Hazır Hizmet & Malzeme Listem", size=17, weight="bold"))
         icerik_alani.controls.append(ft.Row([yeni_ad, yeni_fiyat, ozel_buton("➕ Kaydet", yeni_kaydet, "#2563EB")], wrap=True))
 
         conn = sqlite3.connect(DB_FILE)
@@ -713,10 +775,9 @@ def main(page: ft.Page):
             icerik_alani.controls.append(
                 ft.Container(
                     content=ft.Row([
-                        ft.Text(f"• {ad}", expand=True, weight="bold"),
-                        ft.Text(f"{fiy:,.2f} TL", weight="bold", color="#1E3A8A"),
+                        ft.Text(f"• {ad} ({fiy:,.2f} TL)", weight="bold", color="#1E3A8A"),
                         ozel_buton("🗑️ Sil", sil_hazir(), "#DC2626", 6)
-                    ]),
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                     padding=8, bgcolor="#F1F5F9", border_radius=6
                 )
             )
@@ -727,9 +788,9 @@ def main(page: ft.Page):
         icerik_alani.controls.clear()
         ayar = get_ayarlar()
 
-        f_adi = ft.TextField(label="Kendi Firma / Şirket / Usta Adınız", value=ayar["firma_adi"], width=380)
+        f_adi = ft.TextField(label="Kendi Firma / Şirket / Usta Adınız", value=ayar["firma_adi"], width=320)
         f_tel = ft.TextField(label="İletişim Telefonunuz", value=ayar["firma_tel"], width=280)
-        f_iban = ft.TextField(label="IBAN Numaranız (PDF'te Görünür)", value=ayar["firma_iban"], width=380)
+        f_iban = ft.TextField(label="IBAN Numaranız (PDF'te Görünür)", value=ayar["firma_iban"], width=320)
 
         def kaydet_ayar(ev):
             conn = sqlite3.connect(DB_FILE)
@@ -754,19 +815,18 @@ def main(page: ft.Page):
         icerik_alani.controls.extend([
             ft.Container(
                 content=ft.Column([
-                    ft.Text("⚙️ Firma Bilgilerini ve Logoyu Düzenle", size=18, weight="bold", color="#1E3A8A"),
+                    ft.Text("⚙️ Firma Bilgilerini Düzenle", size=17, weight="bold", color="#1E3A8A"),
                     f_adi,
                     f_tel,
                     f_iban,
                     ft.Row([
-                        ozel_buton("🖼️ Cihazdan Logo Seç", hizli_logo_sec, "#0284C7", 12),
-                        ozel_buton("💾 Bilgileri Kaydet", kaydet_ayar, "#15803D", 12),
+                        ozel_buton("💾 Firma Bilgilerini Kaydet", kaydet_ayar, "#15803D", 12),
                     ], wrap=True, spacing=10)
-                ], spacing=10),
-                padding=14, bgcolor="#F8FAFC", border_radius=10
+                ], spacing=10, tight=True),
+                padding=12, bgcolor="#F8FAFC", border_radius=10
             ),
             ft.Divider(),
-            ft.Text("💎 Abonelik ve Para Kazanma Simülasyonu", size=16, weight="bold", color="#7C3AED"),
+            ft.Text("💎 Abonelik ve Paket Yönetimi", size=16, weight="bold", color="#7C3AED"),
             ozel_buton(
                 "🔄 Ücretsiz Sürüme Dön" if ayar["pro_mu"] == 1 else "💎 PRO SÜRÜME GEÇ (Sınırsız & Reklamsız)",
                 pro_degistir, "#7C3AED", 12
@@ -774,37 +834,38 @@ def main(page: ft.Page):
         ])
         page.update()
 
-    # ÜST KURUMSAL BAR
+    # ÜST KURUMSAL BAR (SafeArea ile telefon kamera çentiğinin altında kalmaz)
     ust_bilgiyi_yenile()
-    page.add(
+    ana_duzen = ft.Column([
         ft.Container(
-            content=ft.Row([
+            content=ft.Column([
                 ft.Row([
                     ust_logo_kutusu,
                     ft.Column([
                         ust_firma_baslik,
-                        ft.Row([
-                            ozel_buton("🖼️ Logo Yükle", hizli_logo_sec, "#0284C7", 7),
-                            ozel_buton("✏️ Firma Değiştir", goster_ayarlar, "#475569", 7),
-                        ], wrap=True, spacing=6)
-                    ], spacing=4)
+                        paket_etiketi
+                    ], spacing=2, tight=True)
                 ], spacing=10),
-                paket_etiketi
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True),
+                ft.Row([
+                    ozel_buton("✏️ Firma Adı / IBAN Değiştir", goster_ayarlar, "#475569", 7),
+                    ozel_buton("🖼️ Logo Seç (PC)", hizli_logo_sec, "#0284C7", 7),
+                ], wrap=True, spacing=6)
+            ], spacing=6, tight=True),
             padding=10, bgcolor="#F8FAFC", border_radius=10
         ),
         ft.Row([
-            ozel_buton("📝 1. Teklif Hazırla", goster_teklif_ekrani, "#1E3A8A", 10),
-            ozel_buton("📂 2. Geçmiş Teklifler", goster_gecmis_teklifler, "#0284C7", 10),
-            ozel_buton("📒 3. Cari & Tahsilat", goster_cari_ekrani, "#B45309", 10),
-            ozel_buton("📦 4. Fiyat Listem", goster_fiyat_listesi, "#0F766E", 10),
-            ozel_buton("⚙️ 5. Firma & Pro", goster_ayarlar, "#6D28D9", 10),
+            ozel_buton("📝 1. Teklif", goster_teklif_ekrani, "#1E3A8A", 9),
+            ozel_buton("📂 2. Arşiv", goster_gecmis_teklifler, "#0284C7", 9),
+            ozel_buton("📒 3. Cari", goster_cari_ekrani, "#B45309", 9),
+            ozel_buton("📦 4. Fiyatlar", goster_fiyat_listesi, "#0F766E", 9),
+            ozel_buton("⚙️ 5. Firma/Pro", goster_ayarlar, "#6D28D9", 9),
         ], wrap=True, spacing=6),
         durum_mesaji,
-        ft.Divider(),
+        ft.Divider(height=1),
         icerik_alani
-    )
+    ], spacing=8, tight=True)
 
+    page.add(ft.SafeArea(content=ana_duzen))
     goster_teklif_ekrani()
 
 if hasattr(ft, "run"):
