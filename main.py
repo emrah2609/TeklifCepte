@@ -1,4 +1,4 @@
-import os
+Paylaştığın hata kaydı (12:08:46), iki mesaj önceki kodun 198. satırında kalan tek karakterlik boşluk kaymasından (     nesneler = [) kaynaklanıyor. Ayrıca telefon ekran görüntüsünde alt kısımdaki 3 tuşun (PDF Oluştur ve Aç, WhatsApp'tan Gönder, Cariye Kaydet) tepki vermemesinin sebebi de netleşti:   Ekran görüntüsünde Müşteri Adı kutusu boş bırakıldığı için tuşlar işlemi durdurup uyarı mesajını sayfanın en tepesine (ekranı aşağı kaydırdığın için görünmeyen kısma) yazıyordu.   GitHub'ın kurduğu Flet 1.0.4 sürümünde telefon tarayıcısını ve WhatsApp'ı açan page.launch_url komutu async (eşzamansız) yapıya geçtiği için, tuş fonksiyonlarının async def olarak tanımlanması gerekiyordu.Aşağıdaki kodda hem 198. satırdaki boşluk hatası düzeltildi (GitHub derlemesi doğrudan yeşil onay ✅ verecek) hem de alt kısımdaki 3 tuş async def yapısıyla doğrudan çalışacak şekilde güncellendi.1.main.py Dosyasını Düzenleme Modunda Aç:GitHub.GitHub proje sayfanda sol üstteki <> Code sekmesine tıkla, listeden main.py dosyasına gir ve sağ üstteki Kalem (✏️ - Edit this file) simgesine tıkla.Doğrulama: Kod kutusunun düzenlenebilir halde açıldığını göreceksin.2.Eski Kodu Silip Hatasız Yeni Kodu Yapıştır:Tümünü Sil ve Yapıştır.Kod kutusunun içine tıkla, klavyeden Ctrl + A ve ardından Delete tuşuna basarak kutunun tamamen boşaldığından emin ol. Aşağıdaki kod kutusunun sağ üst köşesindeki Kopyala butonuna basıp kodu yapıştır (Ctrl + V) ve sağ üstteki yeşil Commit changes... butonuna iki kez basarak kaydet.Doğrulama: Kaydettiğin anda Actions sekmesinde yeni işlemin sarı ışıkla başladığını ve 15. saniyedeki compileall adımını hatasız geçtiğini göreceksin.3.Yeşil Onay Çıkınca Yeni APK'yı Kur:Telefon Kurulumu.Yaklaşık 6-7 dakika sonra Actions sekmesinde yeşil onay (✅) çıktığında Summary sayfasının en altındaki TeklifCepte-Android-Paketleri dosyasını indir. Telefondaki eski uygulamayı kaldırıp yeni teklifcepte.apk dosyasını kur.Doğrulama: Kalem ekleyip "📄 PDF Oluştur ve Aç", "💬 WhatsApp'tan Gönder" veya "📒 Cariye Kaydet" tuşlarına bastığında, butonların tam altında yeşil bildirim ve teklif kartının anında açıldığını göreceksin.Hatasız Tam main.py KoduPythonimport os
 import shutil
 import sqlite3
 import tempfile
@@ -184,7 +184,7 @@ def yedek_pdf_uret(dosya_adi, ayar, musteri_adi, kalemler, ara_toplam, iskonto, 
     icerik_komutlari.append("ET")
     stream_data = "\n".join(icerik_komutlari).encode("latin-1", errors="ignore")
 
-     nesneler = [
+    nesneler = [
         b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
         b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
         b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n",
@@ -402,16 +402,20 @@ def main(page: ft.Page):
     kalemler = []
     secili_kdv = [20]
 
-    def link_ac(url):
+    async def url_baslat(hedef):
+        if os.name == "nt":
+            try:
+                webbrowser.open(hedef)
+            except Exception:
+                pass
+            return
         try:
-            sonuc = page.launch_url(url)
+            sonuc = page.launch_url(hedef)
             if inspect.iscoroutine(sonuc):
-                async def _calistir():
-                    await sonuc
-                page.run_task(_calistir)
+                await sonuc
         except Exception:
             try:
-                webbrowser.open(url)
+                webbrowser.open(hedef)
             except Exception:
                 pass
 
@@ -420,14 +424,14 @@ def main(page: ft.Page):
         dosya_ismi = urllib.parse.quote(os.path.basename(dosya_yolu))
         return f"http://127.0.0.1:{port}/{dosya_ismi}"
 
-    def cihazda_pdf_ac(dosya_yolu):
+    async def cihazda_pdf_ac_async(dosya_yolu):
         if not dosya_yolu or not os.path.exists(dosya_yolu):
-            mesaj_goster("⚠️ PDF dosyası bulunamadı!", "#DC2626")
+            mesaj_goster("⚠️ PDF dosyası bulunamadı!", "#DC2626", "#FEE2E2")
             return
         if os.name == "nt":
             os.startfile(dosya_yolu)
         else:
-            link_ac(pdf_url_getir(dosya_yolu))
+            await url_baslat(pdf_url_getir(dosya_yolu))
 
     def get_ayarlar():
         conn = sqlite3.connect(DB_FILE)
@@ -448,16 +452,17 @@ def main(page: ft.Page):
     ust_logo_kutusu = ft.Container(width=50, height=50, bgcolor="#F1F5F9", border_radius=8, padding=4)
     ust_firma_baslik = ft.Text("", size=17, weight="bold", color="#1E3A8A")
     durum_mesaji = ft.Text("", color="#15803D", weight="bold", size=13)
-    alt_durum_mesaji = ft.Text("", color="#15803D", weight="bold", size=14)
+    alt_bildirim_kutusu = ft.Container(visible=False, padding=10, border_radius=8)
     pdf_sonuc_kutusu = ft.Column(spacing=8, tight=True)
     paket_etiketi = ft.Text("", weight="bold", size=12)
     icerik_alani = ft.Column(spacing=10, tight=True)
 
-    def mesaj_goster(metin, renk="#15803D"):
+    def mesaj_goster(metin, renk="#15803D", arka="#DCFCE7"):
         durum_mesaji.value = metin
         durum_mesaji.color = renk
-        alt_durum_mesaji.value = metin
-        alt_durum_mesaji.color = renk
+        alt_bildirim_kutusu.content = ft.Text(metin, color=renk, weight="bold", size=14)
+        alt_bildirim_kutusu.bgcolor = arka
+        alt_bildirim_kutusu.visible = True
         page.update()
 
     def hizli_logo_sec(e):
@@ -470,11 +475,11 @@ def main(page: ft.Page):
             ust_bilgiyi_yenile()
             mesaj_goster("✅ Kurum logonuz yüklendi!")
         elif not TKINTER_VAR:
-            mesaj_goster("ℹ️ Mobil sürümde firma bilgilerinizi '5. Firma/Pro' sekmesinden düzenleyebilirsiniz.", "#0284C7")
+            mesaj_goster("ℹ️ Mobil sürümde firma bilgilerinizi '5. Firma/Pro' sekmesinden düzenleyebilirsiniz.", "#1E40AF", "#DBEAFE")
 
     ilk_ayar = get_ayarlar()
     musteri_adi = ft.TextField(label="Müşteri Adı Soyadı / Firma", width=310)
-    musteri_tel = ft.TextField(label="Müşteri WhatsApp No (905...)", width=260)
+    musteri_tel = ft.TextField(label="Müşteri WhatsApp No (05...)", width=260)
     urun_adi = ft.TextField(label="Hizmet veya Malzeme Adı", width=260)
     miktar = ft.TextField(label="Miktar", value="1", width=90)
     birim_fiyat = ft.TextField(label="Birim Fiyat (TL)", width=140)
@@ -509,6 +514,32 @@ def main(page: ft.Page):
             except ValueError:
                 return False
         return False
+
+    def wp_url_olustur():
+        m_adi = musteri_adi.value.strip() if (musteri_adi.value and musteri_adi.value.strip()) else "Sayın Müşterimiz"
+        ara, isk, kdv_t, genel = hesapla()
+        ayar = get_ayarlar()
+        tel = "".join(filter(str.isdigit, musteri_tel.value or ""))
+        if tel.startswith("0"):
+            tel = "9" + tel
+        elif len(tel) == 10 and tel.startswith("5"):
+            tel = "90" + tel
+        kalem_listesi = "\n".join(f"• {k['ad']} ({k['miktar']:g}x): {k['toplam']:,.2f} TL" for k in kalemler) or "• Fiyat Teklifi"
+        mesaj = (
+            f"*RESMİ FİYAT TEKLİFİ*\n"
+            f"*{ayar['firma_adi']}* ({ayar['firma_tel']})\n"
+            f"Tarih: {datetime.now().strftime('%d.%m.%Y')}\n\n"
+            f"Sayın *{m_adi}*,\n\n"
+            f"{kalem_listesi}\n\n"
+            f"Ara Toplam: {ara:,.2f} TL\n"
+            f"KDV (%{secili_kdv[0]}): {kdv_t:,.2f} TL\n"
+            f"*GENEL TOPLAM: {genel:,.2f} TL*\n\n"
+            f"Geçerlilik Süresi: {gecerlilik_input.value}\n"
+            f"IBAN: {ayar['firma_iban']}"
+        )
+        return f"https://wa.me/{tel}?text={urllib.parse.quote(mesaj)}"
+
+    wp_ana_buton = ozel_buton("💬 WhatsApp'tan Gönder", None, "#16A34A", 12)
 
     def ust_bilgiyi_yenile():
         ayar = get_ayarlar()
@@ -551,7 +582,13 @@ def main(page: ft.Page):
             )
         ara, isk, kdv_t, genel = hesapla()
         ozet_text.value = f"Ara: {ara:,.2f} TL | KDV (%{secili_kdv[0]}): {kdv_t:,.2f} TL | TOPLAM: {genel:,.2f} TL"
+        wp_ana_buton.url = wp_url_olustur()
         page.update()
+
+    musteri_adi.on_change = lambda e: guncelle_teklif_ekrani()
+    musteri_tel.on_change = lambda e: guncelle_teklif_ekrani()
+    iskonto_input.on_change = lambda e: guncelle_teklif_ekrani()
+    gecerlilik_input.on_change = lambda e: guncelle_teklif_ekrani()
 
     def hazir_kalemleri_yukle():
         hazir_butonlar_row.controls.clear()
@@ -570,7 +607,7 @@ def main(page: ft.Page):
 
     def kalem_ekle(e):
         if not urun_adi.value or not birim_fiyat.value:
-            mesaj_goster("⚠️ Hizmet adı ve birim fiyat girin!", "#DC2626")
+            mesaj_goster("⚠️ Hizmet adı ve birim fiyat girin!", "#DC2626", "#FEE2E2")
             return
         try:
             m = float(miktar.value.replace(",", "."))
@@ -583,7 +620,7 @@ def main(page: ft.Page):
             mesaj_goster(f"✅ '{eklenen_ad}' teklife eklendi!")
             guncelle_teklif_ekrani()
         except ValueError:
-            mesaj_goster("⚠️ Miktar ve fiyata sadece sayı girin!", "#DC2626")
+            mesaj_goster("⚠️ Miktar ve fiyata sadece sayı girin!", "#DC2626", "#FEE2E2")
 
     def kdv_degistir(oran):
         def _degis(e):
@@ -591,43 +628,27 @@ def main(page: ft.Page):
             guncelle_teklif_ekrani()
         return _degis
 
-    iskonto_input.on_change = lambda e: guncelle_teklif_ekrani()
-
-    def whatsapp_gonder(e=None):
+    async def whatsapp_gonder(e=None):
         yazili_kalemi_otomatik_ekle()
         if not kalemler:
-            mesaj_goster("⚠️ WhatsApp gönderimi için en az 1 hizmet kalemi ekleyin!", "#DC2626")
+            mesaj_goster("⚠️ WhatsApp gönderimi için en az 1 hizmet kalemi ekleyin!", "#DC2626", "#FEE2E2")
             return
-        m_adi = musteri_adi.value.strip() if (musteri_adi.value and musteri_adi.value.strip()) else "Müşterimiz"
-        ara, isk, kdv_t, genel = hesapla()
-        ayar = get_ayarlar()
-        tel = "".join(filter(str.isdigit, musteri_tel.value or ""))
-        if tel.startswith("0"):
-            tel = "9" + tel
-        kalem_listesi = "\n".join(f"• {k['ad']} ({k['miktar']:g}x): {k['toplam']:,.2f} TL" for k in kalemler)
-        mesaj = (
-            f"*RESMİ FİYAT TEKLİFİ*\n"
-            f"*{ayar['firma_adi']}* ({ayar['firma_tel']})\n"
-            f"Tarih: {datetime.now().strftime('%d.%m.%Y')}\n\n"
-            f"Sayın *{m_adi}*,\n\n"
-            f"{kalem_listesi}\n\n"
-            f"Ara Toplam: {ara:,.2f} TL\n"
-            f"KDV (%{secili_kdv[0]}): {kdv_t:,.2f} TL\n"
-            f"*GENEL TOPLAM: {genel:,.2f} TL*\n\n"
-            f"Geçerlilik Süresi: {gecerlilik_input.value}\n"
-            f"IBAN: {ayar['firma_iban']}"
-        )
-        link_ac(f"https://wa.me/{tel}?text={urllib.parse.quote(mesaj)}")
+        hedef_wp = wp_url_olustur()
+        wp_ana_buton.url = hedef_wp
+        mesaj_goster("💬 WhatsApp sohbet ekranı açılıyor...")
+        await url_baslat(hedef_wp)
 
-    def pdf_olustur_tikla(e):
+    wp_ana_buton.on_click = whatsapp_gonder
+
+    async def pdf_olustur_tikla(e):
         try:
             yazili_kalemi_otomatik_ekle()
             ayar = get_ayarlar()
             if ayar["pro_mu"] == 0 and ayar["kalan_hak"] <= 0:
-                mesaj_goster("🔒 Ücretsiz 5 PDF hakkınız doldu! '5. Firma/Pro' sekmesinden Pro'ya geçin.", "#DC2626")
+                mesaj_goster("🔒 Ücretsiz 5 PDF hakkınız doldu! Yukarıdan '5. Firma/Pro' sekmesine girip Pro'yu açın.", "#DC2626", "#FEE2E2")
                 return
             if not kalemler:
-                mesaj_goster("⚠️ Önce hizmet adı ve fiyat yazıp '+ Kalem Ekle' veya hazır butonlara dokunun!", "#DC2626")
+                mesaj_goster("⚠️ Önce yukarıdaki hazır kalemlere dokunun veya hizmet ekleyin!", "#DC2626", "#FEE2E2")
                 return
 
             m_adi = musteri_adi.value.strip() if (musteri_adi.value and musteri_adi.value.strip()) else "Sayın Müşterimiz"
@@ -653,16 +674,20 @@ def main(page: ft.Page):
             conn.close()
 
             hedef_url = pdf_url_getir(dosya_yolu)
+            hedef_wp = wp_url_olustur()
             kalem_satirlari = [
                 ft.Text(f"• {k['ad']} ({k['miktar']:g} x {k['fiyat']:,.2f} TL) = {k['toplam']:,.2f} TL", size=13, color="#1E293B")
                 for k in kalemler
             ]
 
+            async def _indir_tikla(ev):
+                await cihazda_pdf_ac_async(dosya_yolu)
+
             pdf_sonuc_kutusu.controls.clear()
             pdf_sonuc_kutusu.controls.append(
                 ft.Container(
                     content=ft.Column([
-                        ft.Text("✅ RESMİ FİYAT TEKLİFİNİZ HAZIRLANDI", weight="bold", color="#15803D", size=15),
+                        ft.Text("✅ RESMİ FİYAT TEKLİFİNİZ HAZIRLANDI!", weight="bold", color="#15803D", size=15),
                         ft.Container(
                             content=ft.Column([
                                 ft.Text(ayar["firma_adi"].upper(), weight="bold", size=16, color="#1E3A8A"),
@@ -680,39 +705,44 @@ def main(page: ft.Page):
                         ),
                         ft.Row([
                             ozel_buton(
-                                "📥 PDF Dosyasını İndir / Aç",
-                                lambda _: cihazda_pdf_ac(dosya_yolu),
+                                "📥 PDF Dosyasını Telefona İndir",
+                                _indir_tikla,
                                 "#1E40AF",
                                 12,
                                 url=hedef_url if os.name != "nt" else None
                             ),
-                            ozel_buton("💬 Teklifi WhatsApp'a Aktar", whatsapp_gonder, "#16A34A", 12),
+                            ozel_buton(
+                                "💬 WhatsApp ile Hemen Gönder",
+                                whatsapp_gonder,
+                                "#16A34A",
+                                12,
+                                url=hedef_wp
+                            ),
                         ], wrap=True, spacing=8)
                     ], spacing=8, tight=True),
                     padding=12, bgcolor="#DCFCE7", border_radius=10
                 )
             )
 
-            mesaj_goster(f"✅ Teklif hazırlandı ve '2. Arşiv' sekmesine kaydedildi!")
+            mesaj_goster("✅ Teklif hazırlandı! Aşağıdaki karttan indirebilir veya paylaşabilirsiniz.")
             guncelle_teklif_ekrani()
-            if os.name == "nt":
-                os.startfile(dosya_yolu)
+            await cihazda_pdf_ac_async(dosya_yolu)
         except Exception as ex:
-            mesaj_goster(f"⚠️ Hata oluştu: {ex}", "#DC2626")
+            mesaj_goster(f"⚠️ Hata oluştu: {ex}", "#DC2626", "#FEE2E2")
 
     def cariye_aktar(e):
         yazili_kalemi_otomatik_ekle()
         if not kalemler:
-            mesaj_goster("⚠️ Cariye kaydetmek için en az 1 kalem girin!", "#DC2626")
+            mesaj_goster("⚠️ Cariye kaydetmek için en az 1 kalem ekleyin!", "#DC2626", "#FEE2E2")
             return
-        m_adi = musteri_adi.value.strip() if (musteri_adi.value and musteri_adi.value.strip()) else "İsimsiz Müşteri"
+        m_adi = musteri_adi.value.strip() if (musteri_adi.value and musteri_adi.value.strip()) else "Sayın Müşterimiz"
         _, _, _, genel = hesapla()
         conn = sqlite3.connect(DB_FILE)
         conn.execute("INSERT INTO cariler (musteri, tel, toplam_borc, odenen, tarih) VALUES (?, ?, ?, 0, ?)",
                      (m_adi, (musteri_tel.value or "").strip(), genel, datetime.now().strftime("%d.%m.%Y")))
         conn.commit()
         conn.close()
-        mesaj_goster(f"✅ {m_adi} ({genel:,.2f} TL) Cari Hesaplara kaydedildi!")
+        mesaj_goster(f"✅ {m_adi} ({genel:,.2f} TL) Cari Hesaplara kaydedildi! '3. Cari' sekmesinden görebilirsiniz.")
 
     def goster_teklif_ekrani(e=None):
         icerik_alani.controls.clear()
@@ -734,12 +764,12 @@ def main(page: ft.Page):
             ], wrap=True),
             ft.Divider(),
             ozet_text,
-            alt_durum_mesaji,
             ft.Row([
                 ozel_buton("📄 PDF Oluştur ve Aç", pdf_olustur_tikla, "#1E40AF", 12),
-                ozel_buton("💬 WhatsApp'tan Gönder", whatsapp_gonder, "#16A34A", 12),
+                wp_ana_buton,
                 ozel_buton("📒 Cariye Kaydet", cariye_aktar, "#D97706", 12),
             ], wrap=True, spacing=8),
+            alt_bildirim_kutusu,
             pdf_sonuc_kutusu,
         ])
         page.update()
@@ -767,26 +797,29 @@ def main(page: ft.Page):
 
         for tid, mus, tel, top, tar, yol, ozet in filtreli:
             indir_linki = pdf_url_getir(yol) if (yol and os.path.exists(yol) and os.name != "nt") else None
+            ayar = get_ayarlar()
+            no = "".join(filter(str.isdigit, tel or ""))
+            if no.startswith("0"):
+                no = "9" + no
+            elif len(no) == 10 and no.startswith("5"):
+                no = "90" + no
+            wp_msj = (
+                f"Sayın *{mus}*,\n"
+                f"*{ayar['firma_adi']}* olarak hazırladığımız fiyat teklifi:\n"
+                f"Kalemler: {ozet}\n"
+                f"*TOPLAM: {top:,.2f} TL*\n"
+                f"IBAN: {ayar['firma_iban']}"
+            )
+            arsiv_wp_link = f"https://wa.me/{no}?text={urllib.parse.quote(wp_msj)}"
 
             def pdf_ac(dosya=yol):
-                def _ac(ev):
-                    cihazda_pdf_ac(dosya)
+                async def _ac(ev):
+                    await cihazda_pdf_ac_async(dosya)
                 return _ac
 
-            def arsivden_wp(m=mus, t=tel, tutar=top, kalem_str=ozet):
-                def _wp(ev):
-                    ayar = get_ayarlar()
-                    no = "".join(filter(str.isdigit, t or ""))
-                    if no.startswith("0"):
-                        no = "9" + no
-                    msj = (
-                        f"Sayın *{m}*,\n"
-                        f"*{ayar['firma_adi']}* olarak hazırladığımız fiyat teklifi:\n"
-                        f"Kalemler: {kalem_str}\n"
-                        f"*TOPLAM: {tutar:,.2f} TL*\n"
-                        f"IBAN: {ayar['firma_iban']}"
-                    )
-                    link_ac(f"https://wa.me/{no}?text={urllib.parse.quote(msj)}")
+            def arsiv_wp_ac(hedef=arsiv_wp_link):
+                async def _wp(ev):
+                    await url_baslat(hedef)
                 return _wp
 
             def arsivden_cariye(m=mus, t=tel, tutar=top):
@@ -818,7 +851,7 @@ def main(page: ft.Page):
                         ft.Text(f"Teklif Tutarı: {top:,.2f} TL", weight="bold", size=14, color="#047857"),
                         ft.Row([
                             ozel_buton("📥 PDF İndir / Aç", pdf_ac(), "#1E40AF", 8, url=indir_linki),
-                            ozel_buton("💬 WP", arsivden_wp(), "#16A34A", 8),
+                            ozel_buton("💬 WP Gönder", arsiv_wp_ac(), "#16A34A", 8, url=arsiv_wp_link),
                             ozel_buton("📒 Cariye At", arsivden_cariye(), "#D97706", 8),
                             ozel_buton("🗑️ Sil", arsiv_sil(), "#DC2626", 8),
                         ], wrap=True, spacing=6)
@@ -846,6 +879,15 @@ def main(page: ft.Page):
             kalan = borc - odenen
             tahsilat_kutusu = ft.TextField(label="Tahsilat (TL)", width=130)
 
+            ayar = get_ayarlar()
+            no = "".join(filter(str.isdigit, tel or ""))
+            if no.startswith("0"):
+                no = "9" + no
+            elif len(no) == 10 and no.startswith("5"):
+                no = "90" + no
+            hatirlat_msj = f"Sayın *{mus}*, *{ayar['firma_adi']}* hesabınızda *{kalan:,.2f} TL* kalan bakiyeniz bulunmaktadır. IBAN: {ayar['firma_iban']}"
+            cari_wp_link = f"https://wa.me/{no}?text={urllib.parse.quote(hatirlat_msj)}" if ayar["pro_mu"] == 1 else None
+
             def odeme_al(kayit_id=cid, kutu=tahsilat_kutusu):
                 def _ode(ev):
                     try:
@@ -860,17 +902,14 @@ def main(page: ft.Page):
                         pass
                 return _ode
 
-            def wp_hatirlat(m=mus, t=tel, k=kalan):
-                def _wp(ev):
-                    ayar = get_ayarlar()
-                    if ayar["pro_mu"] == 0:
-                        mesaj_goster("🔒 WhatsApp Hatırlatma PRO özelliğidir! Ayarlardan Pro'yu açın.", "#DC2626")
+            def wp_hatirlat(hedef=cari_wp_link):
+                async def _wp(ev):
+                    ayar_kontrol = get_ayarlar()
+                    if ayar_kontrol["pro_mu"] == 0:
+                        mesaj_goster("🔒 WhatsApp Hatırlatma PRO özelliğidir! '5. Firma/Pro' sekmesinden Pro'yu açın.", "#DC2626", "#FEE2E2")
                         return
-                    no = "".join(filter(str.isdigit, t or ""))
-                    if no.startswith("0"):
-                        no = "9" + no
-                    msj = f"Sayın *{m}*, *{ayar['firma_adi']}* hesabınızda *{k:,.2f} TL* kalan bakiyeniz bulunmaktadır. IBAN: {ayar['firma_iban']}"
-                    link_ac(f"https://wa.me/{no}?text={urllib.parse.quote(msj)}")
+                    if hedef:
+                        await url_baslat(hedef)
                 return _wp
 
             def cari_sil(kayit_id=cid):
@@ -890,7 +929,7 @@ def main(page: ft.Page):
                         ft.Row([
                             tahsilat_kutusu,
                             ozel_buton("💵 Tahsilat Düş", odeme_al(), "#15803D", 8),
-                            ozel_buton("📲 WP Hatırlat", wp_hatirlat(), "#0D9488", 8),
+                            ozel_buton("📲 WP Hatırlat", wp_hatirlat(), "#0D9488", 8, url=cari_wp_link),
                             ozel_buton("🗑️", cari_sil(), "#DC2626", 8),
                         ], wrap=True, spacing=6)
                     ], spacing=4, tight=True),
