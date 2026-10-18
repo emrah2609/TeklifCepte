@@ -4,6 +4,7 @@ import shutil
 import sqlite3
 import tempfile
 import threading
+import textwrap
 import inspect
 import http.server
 import socketserver
@@ -173,10 +174,14 @@ def tr_temizle(metin):
 def yedek_pdf_uret(dosya_adi, ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tutar, genel_toplam, gecerlilik_suresi, notlar="", pb="TL"):
     satirlar = [
         f"RESMI FIYAT TEKLIFI - Tarih: {datetime.now().strftime('%d.%m.%Y')}",
-        f"FIRMA: {tr_temizle(ayar['firma_adi'])} | Tel: {tr_temizle(ayar['firma_tel'])}",
     ]
+    uzun_firma = tr_temizle(ayar["firma_adi"] or "FIRMA ADI").upper()
+    for parca in textwrap.wrap(uzun_firma, width=55) or ["FIRMA ADI"]:
+        satirlar.append(parca.center(60))
+    satirlar.append(f"Tel: {tr_temizle(ayar['firma_tel'])}".center(60))
     if ayar.get("firma_adres"):
-        satirlar.append(f"Adres: {tr_temizle(ayar['firma_adres'])}")
+        for a_parca in textwrap.wrap(f"Adres: {tr_temizle(ayar['firma_adres'])}", width=58):
+            satirlar.append(a_parca.center(60))
     satirlar.extend([
         "------------------------------------------------------------",
         f"SAYIN: {tr_temizle(musteri_adi)}",
@@ -286,32 +291,34 @@ def _pdf_ciz(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tut
     pdf.set_text_color(80, 80, 80)
     pdf.cell(90, 6, yaz(f"Tarih: {datetime.now().strftime('%d.%m.%Y')}"), align="R")
 
-    firma_y = 33 if logo_basildi else 22
+    # UZUN FİRMA İSMİ: Otomatik alt satıra iner ve sayfa ortasına hizalanır
+    firma_y = 33 if logo_basildi else 24
     pdf.set_xy(10, firma_y)
     pdf.set_text_color(30, 58, 138)
-    pdf.set_font(font_name, "B", 16)
     f_adi_metni = ayar["firma_adi"].upper() if ayar["firma_adi"] else "FIRMA ADI"
-    pdf.cell(0, 8, yaz(f_adi_metni), new_x="LMARGIN", new_y="NEXT", align="C")
+    baslik_punto = 13 if len(f_adi_metni) > 38 else 15
+    pdf.set_font(font_name, "B", baslik_punto)
+    pdf.multi_cell(190, 7, yaz(f_adi_metni), align="C")
 
     alt_bilgi = f"İletişim / Tel: {ayar['firma_tel']}"
     if ayar.get("firma_adres"):
         alt_bilgi += f" | {ayar['firma_adres']}"
 
-    pdf.set_xy(10, firma_y + 8)
+    pdf.set_x(10)
     pdf.set_text_color(70, 70, 70)
     pdf.set_font(font_name, "", 10)
-    pdf.cell(0, 6, yaz(alt_bilgi), new_x="LMARGIN", new_y="NEXT", align="C")
+    pdf.multi_cell(190, 5.5, yaz(alt_bilgi), align="C")
 
-    cizgi_y = firma_y + 16
+    cizgi_y = pdf.get_y() + 3
     pdf.set_draw_color(200, 200, 200)
     pdf.line(10, cizgi_y, 200, cizgi_y)
 
     pdf.set_xy(10, cizgi_y + 4)
     pdf.set_fill_color(241, 245, 249)
     pdf.set_text_color(0, 0, 0)
-    pdf.set_font(font_name, "B", 12)
-    pdf.cell(0, 10, yaz(f"  SAYIN: {musteri_adi}"), new_x="LMARGIN", new_y="NEXT", fill=True)
-    pdf.ln(4)
+    pdf.set_font(font_name, "B", 11)
+    pdf.multi_cell(190, 8, yaz(f"  SAYIN: {musteri_adi}"), fill=True)
+    pdf.ln(3)
 
     pdf.set_fill_color(30, 58, 138)
     pdf.set_text_color(255, 255, 255)
@@ -353,16 +360,18 @@ def _pdf_ciz(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tut
 
     if notlar and notlar.strip():
         pdf.ln(4)
+        pdf.set_x(10)
         pdf.set_fill_color(254, 249, 195)
-        pdf.set_font(font_name, "B", 10)
+        pdf.set_font(font_name, "B", 9.5)
         pdf.set_text_color(133, 77, 14)
-        pdf.cell(0, 8, yaz(f"  Not / Ödeme Şartları: {notlar.strip()}"), new_x="LMARGIN", new_y="NEXT", fill=True)
+        pdf.multi_cell(190, 6, yaz(f"  Not / Ödeme Şartları: {notlar.strip()}"), fill=True)
 
     pdf.ln(4)
+    pdf.set_x(10)
     pdf.set_fill_color(241, 245, 249)
     pdf.set_font(font_name, "B", 10)
     pdf.set_text_color(30, 58, 138)
-    pdf.cell(0, 8, yaz(f"  Ödeme İçin IBAN: {ayar['firma_iban']}"), new_x="LMARGIN", new_y="NEXT", fill=True)
+    pdf.cell(190, 8, yaz(f"  Ödeme İçin IBAN: {ayar['firma_iban']}"), new_x="LMARGIN", new_y="NEXT", fill=True)
 
     alt_y = pdf.get_y() + 6
     pdf.set_xy(10, alt_y)
@@ -372,7 +381,7 @@ def _pdf_ciz(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tut
 
     kutu_x = 130
     kutu_w = 70
-    kutu_h = 34
+    kutu_h = 36
     pdf.set_draw_color(160, 175, 195)
     pdf.set_fill_color(250, 251, 253)
     pdf.rect(kutu_x, alt_y, kutu_w, kutu_h, style="DF")
@@ -382,17 +391,18 @@ def _pdf_ciz(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tut
     pdf.set_text_color(30, 58, 138)
     pdf.cell(kutu_w, 6, yaz("YETKİLİ KAŞE / İMZA"), align="C")
 
-    pdf.set_xy(kutu_x, alt_y + 8)
-    pdf.set_font(font_name, "", 8)
+    # Kaşe kutusunun içindeki uzun firma adı da ortalanarak alt satıra iner
+    pdf.set_xy(kutu_x + 2, alt_y + 8)
+    pdf.set_font(font_name, "", 7.5)
     pdf.set_text_color(90, 90, 90)
-    pdf.cell(kutu_w, 5, yaz(f_adi_metni[:32]), align="C")
+    pdf.multi_cell(kutu_w - 4, 3.8, yaz(f_adi_metni[:95]), align="C")
 
     pdf.set_draw_color(210, 215, 220)
-    pdf.line(kutu_x + 10, alt_y + 26, kutu_x + kutu_w - 10, alt_y + 26)
+    pdf.line(kutu_x + 10, alt_y + 28, kutu_x + kutu_w - 10, alt_y + 28)
     sag_bitis_y = alt_y + kutu_h
 
     if ayar["pro_mu"] == 0:
-        pdf.set_y(sag_bitis_y + 6)
+        pdf.set_y(sag_bitis_y + 5)
         pdf.set_font(font_name, "B", 9)
         pdf.set_text_color(180, 83, 9)
         pdf.cell(0, 6, yaz("Bu fiyat teklifi TeklifCepte uygulaması ile ücretsiz hazırlanmıştır."), align="C")
@@ -487,7 +497,7 @@ def main(page: ft.Page):
         }
 
     ust_logo_kutusu = ft.Container(width=50, height=50, bgcolor="#F1F5F9", border_radius=8, padding=4)
-    ust_firma_baslik = ft.Text("", size=17, weight="bold", color="#1E3A8A")
+    ust_firma_baslik = ft.Text("", size=16, weight="bold", color="#1E3A8A")
     durum_mesaji = ft.Text("", color="#15803D", weight="bold", size=13)
     alt_bildirim_kutusu = ft.Container(visible=False, padding=10, border_radius=8)
     pdf_sonuc_kutusu = ft.Column(spacing=8, tight=True)
@@ -767,7 +777,7 @@ def main(page: ft.Page):
                         ft.Text("✅ RESMİ FİYAT TEKLİFİNİZ HAZIRLANDI!", weight="bold", color="#15803D", size=15),
                         ft.Container(
                             content=ft.Column([
-                                ft.Text(ayar["firma_adi"].upper(), weight="bold", size=16, color="#1E3A8A"),
+                                ft.Text(ayar["firma_adi"].upper(), weight="bold", size=15, color="#1E3A8A", text_align=ft.TextAlign.CENTER),
                                 ft.Text(f"Tel: {ayar['firma_tel']} | Tarih: {datetime.now().strftime('%d.%m.%Y')}", size=12, color="#475569"),
                                 ft.Divider(height=1),
                                 ft.Text(f"SAYIN: {m_adi}", weight="bold", size=14, color="#0F172A"),
@@ -1183,8 +1193,8 @@ def main(page: ft.Page):
                     ft.Column([
                         ust_firma_baslik,
                         paket_etiketi
-                    ], spacing=2, tight=True)
-                ], spacing=10),
+                    ], spacing=2, tight=True, width=260)
+                ], spacing=10, wrap=True),
                 ft.Row([
                     ozel_buton("✏️ Firma Adı / IBAN Değiştir", goster_ayarlar, "#475569", 7),
                     ozel_buton("🖼️ Logo Seç (PC)", hizli_logo_sec, "#0284C7", 7),
