@@ -35,7 +35,6 @@ PRO_FIYAT_METNI = "499 TL (Tek Seferlik / Sınırsız Lisans)"
 SATIS_WHATSAPP_NO = "905000000000"  # Kendi WhatsApp numaranı başında 90 ile yaz
 PRO_ANA_SIFRE = "PRO2026"           # Senin genel yönetici şifren
 
-# Masaüstü (.exe) ve Android için doğru kayıt klasörünü otomatik bulur
 VERI_DIZINI = os.environ.get("FLET_APP_STORAGE_DATA")
 if not VERI_DIZINI:
     if os.name == "nt":
@@ -128,6 +127,9 @@ def init_db():
     c.execute("""CREATE TABLE IF NOT EXISTS hazir_kalemler (
         id INTEGER PRIMARY KEY AUTOINCREMENT, ad TEXT, fiyat REAL
     )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS musteriler (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, ad TEXT, tel TEXT, adres TEXT
+    )""")
     c.execute("""CREATE TABLE IF NOT EXISTS cariler (
         id INTEGER PRIMARY KEY AUTOINCREMENT, musteri TEXT, tel TEXT, toplam_borc REAL, odenen REAL, tarih TEXT
     )""")
@@ -149,6 +151,8 @@ def init_db():
         c.execute("ALTER TABLE gecmis_teklifler ADD COLUMN kalem_json TEXT DEFAULT ''")
     if "para_birimi" not in g_sutunlar:
         c.execute("ALTER TABLE gecmis_teklifler ADD COLUMN para_birimi TEXT DEFAULT 'TL'")
+    if "musteri_adres" not in g_sutunlar:
+        c.execute("ALTER TABLE gecmis_teklifler ADD COLUMN musteri_adres TEXT DEFAULT ''")
 
     rastgele_cihaz = str(random.randint(10000, 99999))
     c.execute("SELECT COUNT(*) FROM ayarlar")
@@ -168,6 +172,28 @@ def init_db():
 
     conn.commit()
     conn.close()
+
+
+def musteri_rehbere_kaydet(ad, tel="", adres=""):
+    temiz_ad = (ad or "").strip()
+    if not temiz_ad or temiz_ad in ["Sayın Müşterimiz", "Müşterimiz", "İsimsiz Müşteri"]:
+        return False
+    temiz_tel = (tel or "").strip()
+    temiz_adres = (adres or "").strip()
+
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT id, tel, adres FROM musteriler WHERE LOWER(ad)=LOWER(?)", (temiz_ad,))
+    mevcut = c.fetchone()
+    if mevcut:
+        yeni_tel = temiz_tel if temiz_tel else (mevcut[1] or "")
+        yeni_adres = temiz_adres if temiz_adres else (mevcut[2] or "")
+        c.execute("UPDATE musteriler SET ad=?, tel=?, adres=? WHERE id=?", (temiz_ad, yeni_tel, yeni_adres, mevcut[0]))
+    else:
+        c.execute("INSERT INTO musteriler (ad, tel, adres) VALUES (?, ?, ?)", (temiz_ad, temiz_tel, temiz_adres))
+    conn.commit()
+    conn.close()
+    return True
 
 
 def cihazdan_logo_yukle():
@@ -197,7 +223,7 @@ def tr_temizle(metin):
     return str(metin).translate(harita)
 
 
-def yedek_pdf_uret(dosya_adi, ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tutar, genel_toplam, gecerlilik_suresi, notlar="", pb="TL"):
+def yedek_pdf_uret(dosya_adi, ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tutar, genel_toplam, gecerlilik_suresi, notlar="", pb="TL", musteri_adres=""):
     satirlar = [
         f"RESMI FIYAT TEKLIFI - Tarih: {datetime.now().strftime('%d.%m.%Y')}",
     ]
@@ -211,8 +237,10 @@ def yedek_pdf_uret(dosya_adi, ayar, musteri_adi, kalemler, ara_toplam, iskonto, 
     satirlar.extend([
         "------------------------------------------------------------",
         f"SAYIN: {tr_temizle(musteri_adi)}",
-        "------------------------------------------------------------",
     ])
+    if musteri_adres:
+        satirlar.append(f"Musteri Adres/Bilgi: {tr_temizle(musteri_adres)}")
+    satirlar.append("------------------------------------------------------------")
     for i, k in enumerate(kalemler):
         birim = tr_temizle(k.get("birim", "Adet"))
         satirlar.append(f"{i+1}. {tr_temizle(k['ad'])} | {k['miktar']:g} {birim} x {k['fiyat']:,.2f} {pb} = {k['toplam']:,.2f} {pb}")
@@ -259,13 +287,13 @@ def yedek_pdf_uret(dosya_adi, ayar, musteri_adi, kalemler, ara_toplam, iskonto, 
     return os.path.abspath(dosya_adi)
 
 
-def _pdf_ciz(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tutar, genel_toplam, gecerlilik_suresi, notlar="", pb="TL", font_kullan=True):
+def _pdf_ciz(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tutar, genel_toplam, gecerlilik_suresi, notlar="", pb="TL", musteri_adres="", font_kullan=True):
     temiz_isim = "".join(c if c.isalnum() else "_" for c in tr_temizle(musteri_adi)) or "Musteri"
     zaman_eki = datetime.now().strftime("%Y%m%d_%H%M%S")
     dosya_adi = os.path.join(ARSIV_KLASORU, f"Teklif_{temiz_isim}_{zaman_eki}.pdf")
 
     if not FPDF_VAR:
-        return yedek_pdf_uret(dosya_adi, ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tutar, genel_toplam, gecerlilik_suresi, notlar, pb)
+        return yedek_pdf_uret(dosya_adi, ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tutar, genel_toplam, gecerlilik_suresi, notlar, pb, musteri_adres)
 
     pdf = FPDF()
     pdf.add_page()
@@ -342,7 +370,10 @@ def _pdf_ciz(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tut
     pdf.set_fill_color(241, 245, 249)
     pdf.set_text_color(0, 0, 0)
     pdf.set_font(font_name, "B", 11)
-    pdf.multi_cell(190, 8, yaz(f"  SAYIN: {musteri_adi}"), fill=True)
+    sayin_metni = f"  SAYIN: {musteri_adi}"
+    if musteri_adres and musteri_adres.strip():
+        sayin_metni += f"\n  Adres / Bilgi: {musteri_adres.strip()}"
+    pdf.multi_cell(190, 6.5, yaz(sayin_metni), fill=True)
     pdf.ln(3)
 
     pdf.set_fill_color(30, 58, 138)
@@ -435,17 +466,17 @@ def _pdf_ciz(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tut
     return os.path.abspath(dosya_adi)
 
 
-def create_quote_pdf(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tutar, genel_toplam, gecerlilik_suresi, notlar="", pb="TL"):
+def create_quote_pdf(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tutar, genel_toplam, gecerlilik_suresi, notlar="", pb="TL", musteri_adres=""):
     try:
-        return _pdf_ciz(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tutar, genel_toplam, gecerlilik_suresi, notlar, pb, font_kullan=True)
+        return _pdf_ciz(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tutar, genel_toplam, gecerlilik_suresi, notlar, pb, musteri_adres, font_kullan=True)
     except Exception:
         try:
-            return _pdf_ciz(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tutar, genel_toplam, gecerlilik_suresi, notlar, pb, font_kullan=False)
+            return _pdf_ciz(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tutar, genel_toplam, gecerlilik_suresi, notlar, pb, musteri_adres, font_kullan=False)
         except Exception:
             temiz_isim = "".join(c if c.isalnum() else "_" for c in tr_temizle(musteri_adi)) or "Musteri"
             zaman_eki = datetime.now().strftime("%Y%m%d_%H%M%S")
             dosya_adi = os.path.join(ARSIV_KLASORU, f"Teklif_{temiz_isim}_{zaman_eki}.pdf")
-            return yedek_pdf_uret(dosya_adi, ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tutar, genel_toplam, gecerlilik_suresi, notlar, pb)
+            return yedek_pdf_uret(dosya_adi, ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tutar, genel_toplam, gecerlilik_suresi, notlar, pb, musteri_adres)
 
 
 def ozel_buton(yazi, tiklama=None, renk="#1E3A8A", padding_degeri=10, url=None):
@@ -462,7 +493,7 @@ def ozel_buton(yazi, tiklama=None, renk="#1E3A8A", padding_degeri=10, url=None):
 def main(page: ft.Page):
     init_db()
     pdf_sunucu_baslat()
-    page.title = "TeklifCepte Pro v4.2"
+    page.title = "TeklifCepte Pro v4.3"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 12
     page.scroll = ft.ScrollMode.AUTO
@@ -550,8 +581,11 @@ def main(page: ft.Page):
             mesaj_goster("ℹ️ Mobil sürümde firma bilgilerinizi '5. Firma/Pro' sekmesinden düzenleyebilirsiniz.", "#1E40AF", "#DBEAFE")
 
     ilk_ayar = get_ayarlar()
-    musteri_adi = ft.TextField(label="Müşteri Adı Soyadı / Firma", width=310)
-    musteri_tel = ft.TextField(label="Müşteri WhatsApp No (05...)", width=260)
+    musteri_adi = ft.TextField(label="Müşteri Adı Soyadı / Firma", width=280)
+    musteri_tel = ft.TextField(label="Müşteri WhatsApp No (05...)", width=220)
+    musteri_adres = ft.TextField(label="Müşteri Adresi / Vergi No (İsteğe Bağlı)", width=300)
+    musteri_filtre_input = ft.TextField(label="🔍 Kayıtlı Müşteri Ara...", width=220, height=45)
+
     urun_adi = ft.TextField(label="Hizmet veya Malzeme Adı", width=260)
     miktar = ft.TextField(label="Miktar", value="1", width=90)
     birim_fiyat = ft.TextField(label="Birim Fiyat", width=140)
@@ -563,6 +597,7 @@ def main(page: ft.Page):
     kalem_tablosu = ft.Column(spacing=6, tight=True)
     ozet_text = ft.Text("Genel Toplam: 0.00 TL", size=16, weight="bold", color="#1E3A8A")
     hazir_butonlar_row = ft.Row(wrap=True, spacing=6)
+    kayitli_musteriler_row = ft.Row(wrap=True, spacing=6)
 
     def hesapla():
         ara = sum(k["toplam"] for k in kalemler)
@@ -597,6 +632,7 @@ def main(page: ft.Page):
 
     def wp_url_olustur():
         m_adi = musteri_adi.value.strip() if (musteri_adi.value and musteri_adi.value.strip()) else "Sayın Müşterimiz"
+        m_adr = musteri_adres.value.strip() if (musteri_adres.value and musteri_adres.value.strip()) else ""
         ara, isk, kdv_t, genel = hesapla()
         pb = secili_pb[0]
         ayar = get_ayarlar()
@@ -609,12 +645,14 @@ def main(page: ft.Page):
             f"• {k['ad']} ({k['miktar']:g} {k.get('birim', 'Adet')}): {k['toplam']:,.2f} {pb}"
             for k in kalemler
         ) or "• Fiyat Teklifi"
+        adres_satiri = f"Adres/Bilgi: {m_adr}\n" if m_adr else ""
         not_satiri = f"\nNot: {teklif_notu.value.strip()}\n" if (teklif_notu.value and teklif_notu.value.strip()) else "\n"
         mesaj = (
             f"*RESMİ FİYAT TEKLİFİ*\n"
             f"*{ayar['firma_adi']}* ({ayar['firma_tel']})\n"
             f"Tarih: {datetime.now().strftime('%d.%m.%Y')}\n\n"
-            f"Sayın *{m_adi}*,\n\n"
+            f"Sayın *{m_adi}*,\n"
+            f"{adres_satiri}\n"
             f"{kalem_listesi}\n\n"
             f"Ara Toplam: {ara:,.2f} {pb}\n"
             f"KDV (%{secili_kdv[0]}): {kdv_t:,.2f} {pb}\n"
@@ -643,6 +681,51 @@ def main(page: ft.Page):
         else:
             paket_etiketi.value = f"🎁 ÜCRETSİZ (Kalan PDF: {ayar['kalan_hak']}/5)"
             paket_etiketi.color = "#B45309"
+
+    def kayitli_musterileri_yukle():
+        kayitli_musteriler_row.controls.clear()
+        filtre = (musteri_filtre_input.value or "").strip().lower()
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT id, ad, tel, adres FROM musteriler ORDER BY id DESC")
+        tum_musteriler = c.fetchall()
+        conn.close()
+
+        secilenler = [m for m in tum_musteriler if filtre in (m[1] or "").lower() or filtre in (m[2] or "").lower()]
+
+        if not secilenler:
+            kayitli_musteriler_row.controls.append(
+                ft.Text("Henüz kayıtlı müşteri yok (Teklif verdikçe veya '💾 Müşteriyi Kaydet'e bastıkça buraya eklenir).", size=12, color="#64748B")
+            )
+        else:
+            for mid, m_ad, m_tel, m_adr in secilenler[:15]:
+                def musteri_getir(a=m_ad, t=m_tel, adr=m_adr):
+                    def _sec(e):
+                        musteri_adi.value = a or ""
+                        musteri_tel.value = t or ""
+                        musteri_adres.value = adr or ""
+                        mesaj_goster(f"👤 '{a}' bilgileri otomatik dolduruldu!")
+                        guncelle_teklif_ekrani()
+                    return _sec
+
+                etiket = f"👤 {m_ad}" + (f" ({m_tel})" if m_tel else "")
+                kayitli_musteriler_row.controls.append(ozel_buton(etiket, musteri_getir(), "#0284C7", 7))
+
+    def manuel_musteri_kaydet(e):
+        if not musteri_adi.value or not musteri_adi.value.strip():
+            mesaj_goster("⚠️ Kaydetmek için önce Müşteri Adı girin!", "#DC2626", "#FEE2E2")
+            return
+        musteri_rehbere_kaydet(musteri_adi.value, musteri_tel.value, musteri_adres.value)
+        kayitli_musterileri_yukle()
+        mesaj_goster(f"✅ '{musteri_adi.value.strip()}' müşteri rehberine kaydedildi!")
+
+    def musteri_kutulari_temizle(e):
+        musteri_adi.value = ""
+        musteri_tel.value = ""
+        musteri_adres.value = ""
+        guncelle_teklif_ekrani()
+
+    musteri_filtre_input.on_change = lambda e: (kayitli_musterileri_yukle(), page.update())
 
     def guncelle_teklif_ekrani():
         ust_bilgiyi_yenile()
@@ -676,6 +759,7 @@ def main(page: ft.Page):
 
     musteri_adi.on_change = lambda e: guncelle_teklif_ekrani()
     musteri_tel.on_change = lambda e: guncelle_teklif_ekrani()
+    musteri_adres.on_change = lambda e: guncelle_teklif_ekrani()
     iskonto_input.on_change = lambda e: guncelle_teklif_ekrani()
     gecerlilik_input.on_change = lambda e: guncelle_teklif_ekrani()
     teklif_notu.on_change = lambda e: guncelle_teklif_ekrani()
@@ -741,6 +825,8 @@ def main(page: ft.Page):
         if not kalemler:
             mesaj_goster("⚠️ WhatsApp gönderimi için en az 1 hizmet kalemi ekleyin!", "#DC2626", "#FEE2E2")
             return
+        musteri_rehbere_kaydet(musteri_adi.value, musteri_tel.value, musteri_adres.value)
+        kayitli_musterileri_yukle()
         hedef_wp = wp_url_olustur()
         wp_ana_buton.url = hedef_wp
         mesaj_goster("💬 WhatsApp sohbet ekranı açılıyor...")
@@ -760,13 +846,17 @@ def main(page: ft.Page):
                 return
 
             m_adi = musteri_adi.value.strip() if (musteri_adi.value and musteri_adi.value.strip()) else "Sayın Müşterimiz"
+            m_adr = (musteri_adres.value or "").strip()
+            musteri_rehbere_kaydet(m_adi, musteri_tel.value, m_adr)
+            kayitli_musterileri_yukle()
+
             ara, isk, kdv_t, genel = hesapla()
             pb = secili_pb[0]
             gecerlilik_str = (gecerlilik_input.value or "30 Gün").strip()
             not_str = (teklif_notu.value or "").strip()
 
             dosya_yolu = create_quote_pdf(
-                ayar, m_adi, kalemler, ara, isk, secili_kdv[0], kdv_t, genel, gecerlilik_str, not_str, pb
+                ayar, m_adi, kalemler, ara, isk, secili_kdv[0], kdv_t, genel, gecerlilik_str, not_str, pb, m_adr
             )
 
             ozet_metni = ", ".join(f"{k['ad']} ({k['miktar']:g} {k.get('birim', 'Adet')})" for k in kalemler)
@@ -776,9 +866,9 @@ def main(page: ft.Page):
             conn = sqlite3.connect(DB_FILE)
             conn.execute("UPDATE ayarlar SET gecerlilik=? WHERE id=1", (gecerlilik_str,))
             conn.execute(
-                "INSERT INTO gecmis_teklifler (musteri, tel, toplam, tarih, dosya_yolu, kalem_ozeti, durum, kalem_json, para_birimi) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'Bekliyor', ?, ?)",
-                (m_adi, (musteri_tel.value or "").strip(), genel, tarih_str, dosya_yolu, ozet_metni, kalem_json_str, pb)
+                "INSERT INTO gecmis_teklifler (musteri, tel, toplam, tarih, dosya_yolu, kalem_ozeti, durum, kalem_json, para_birimi, musteri_adres) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'Bekliyor', ?, ?, ?)",
+                (m_adi, (musteri_tel.value or "").strip(), genel, tarih_str, dosya_yolu, ozet_metni, kalem_json_str, pb, m_adr)
             )
             if ayar["pro_mu"] == 0 and ayar["kalan_hak"] > 0:
                 conn.execute("UPDATE ayarlar SET kalan_hak = kalan_hak - 1 WHERE id=1")
@@ -806,6 +896,7 @@ def main(page: ft.Page):
                                 ft.Text(f"Tel: {ayar['firma_tel']} | Tarih: {datetime.now().strftime('%d.%m.%Y')}", size=12, color="#475569"),
                                 ft.Divider(height=1),
                                 ft.Text(f"SAYIN: {m_adi}", weight="bold", size=14, color="#0F172A"),
+                                ft.Text(f"Adres/Bilgi: {m_adr}" if m_adr else "", size=12, color="#475569"),
                                 ft.Column(kalem_satirlari, spacing=3, tight=True),
                                 ft.Divider(height=1),
                                 ft.Text(f"Ara Toplam: {ara:,.2f} {pb} | KDV (%{secili_kdv[0]}): {kdv_t:,.2f} {pb}", size=12, color="#334155"),
@@ -837,7 +928,7 @@ def main(page: ft.Page):
                 )
             )
 
-            mesaj_goster("✅ Teklif hazırlandı! Aşağıdaki karttan açabilir veya paylaşabilirsiniz.")
+            mesaj_goster("✅ Teklif hazırlandı ve müşteri rehbere kaydedildi!")
             guncelle_teklif_ekrani()
             await cihazda_pdf_ac_async(dosya_yolu)
         except Exception as ex:
@@ -849,21 +940,39 @@ def main(page: ft.Page):
             mesaj_goster("⚠️ Cariye kaydetmek için en az 1 kalem ekleyin!", "#DC2626", "#FEE2E2")
             return
         m_adi = musteri_adi.value.strip() if (musteri_adi.value and musteri_adi.value.strip()) else "Sayın Müşterimiz"
+        musteri_rehbere_kaydet(m_adi, musteri_tel.value, musteri_adres.value)
+        kayitli_musterileri_yukle()
         _, _, _, genel = hesapla()
         conn = sqlite3.connect(DB_FILE)
         conn.execute("INSERT INTO cariler (musteri, tel, toplam_borc, odenen, tarih) VALUES (?, ?, ?, 0, ?)",
                      (m_adi, (musteri_tel.value or "").strip(), genel, datetime.now().strftime("%d.%m.%Y")))
         conn.commit()
         conn.close()
-        mesaj_goster(f"✅ {m_adi} ({genel:,.2f} {secili_pb[0]}) Cari Hesaplara kaydedildi!")
+        mesaj_goster(f"✅ {m_adi} ({genel:,.2f} {secili_pb[0]}) Cari Hesaplara ve Rehbere kaydedildi!")
 
     def goster_teklif_ekrani(e=None):
         icerik_alani.controls.clear()
+        kayitli_musterileri_yukle()
         hazir_kalemleri_yukle()
         guncelle_teklif_ekrani()
         icerik_alani.controls.extend([
-            ft.Text("1. Müşteri Bilgileri", weight="bold", size=15),
-            ft.Row([musteri_adi, musteri_tel], wrap=True),
+            ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Text("1. Müşteri Bilgileri (Rehberden Seç veya Yeni Yaz)", weight="bold", size=15, color="#1E3A8A"),
+                        musteri_filtre_input,
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True),
+                    ft.Text("👥 Kayıtlı Müşterileriniz (Tek Tıkla Bilgileri Doldur):", size=12, weight="bold", color="#0284C7"),
+                    kayitli_musteriler_row,
+                    ft.Row([musteri_adi, musteri_tel], wrap=True),
+                    ft.Row([
+                        musteri_adres,
+                        ozel_buton("💾 Müşteriyi Kaydet", manuel_musteri_kaydet, "#0284C7", 10),
+                        ozel_buton("🧹 Temizle", musteri_kutulari_temizle, "#64748B", 10),
+                    ], wrap=True),
+                ], spacing=8, tight=True),
+                padding=10, bgcolor="#F8FAFC", border_radius=10
+            ),
             ft.Text("2. Kayıtlı Hizmetlerden Tek Tıkla Ekle:", weight="bold", size=13, color="#475569"),
             hazir_butonlar_row,
             birim_etiketi,
@@ -907,7 +1016,7 @@ def main(page: ft.Page):
 
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
-        c.execute("SELECT id, musteri, tel, toplam, tarih, dosya_yolu, kalem_ozeti, durum, kalem_json, para_birimi FROM gecmis_teklifler ORDER BY id DESC")
+        c.execute("SELECT id, musteri, tel, toplam, tarih, dosya_yolu, kalem_ozeti, durum, kalem_json, para_birimi, musteri_adres FROM gecmis_teklifler ORDER BY id DESC")
         tum_teklifler = c.fetchall()
         conn.close()
 
@@ -921,7 +1030,7 @@ def main(page: ft.Page):
             arama_kutusu,
         ])
 
-        for tid, mus, tel, top, tar, yol, ozet, drm, k_json, pb in filtreli:
+        for tid, mus, tel, top, tar, yol, ozet, drm, k_json, pb, m_adr in filtreli:
             pb = pb or "TL"
             drm = drm or "Bekliyor"
             indir_linki = pdf_url_getir(yol) if (yol and os.path.exists(yol) and os.name != "nt") else None
@@ -950,10 +1059,11 @@ def main(page: ft.Page):
                     await url_baslat(hedef)
                 return _wp
 
-            def teklifi_duzenle(m=mus, t=tel, kj=k_json, p_birim=pb):
+            def teklifi_duzenle(m=mus, t=tel, kj=k_json, p_birim=pb, adr=m_adr):
                 def _duz(ev):
                     musteri_adi.value = m
                     musteri_tel.value = t or ""
+                    musteri_adres.value = adr or ""
                     secili_pb[0] = p_birim or "TL"
                     kalemler.clear()
                     if kj:
@@ -1105,8 +1215,8 @@ def main(page: ft.Page):
             except ValueError:
                 pass
 
-        icerik_alani.controls.append(ft.Text("📦 Hazır Hizmet & Malzeme Listem", size=17, weight="bold"))
-        icerik_alani.controls.append(ft.Row([yeni_ad, yeni_fiyat, ozel_buton("➕ Kaydet", yeni_kaydet, "#2563EB")], wrap=True))
+        icerik_alani.controls.append(ft.Text("📦 Hazır Hizmet & Malzeme Listem", size=17, weight="bold", color="#1E3A8A"))
+        icerik_alani.controls.append(ft.Row([yeni_ad, yeni_fiyat, ozel_buton("➕ Hizmet Kaydet", yeni_kaydet, "#2563EB")], wrap=True))
 
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
@@ -1130,7 +1240,51 @@ def main(page: ft.Page):
                     padding=8, bgcolor="#F1F5F9", border_radius=6
                 )
             )
+
+        icerik_alani.controls.append(ft.Divider())
+        icerik_alani.controls.append(ft.Text("👥 Kayıtlı Müşteri Rehberim", size=17, weight="bold", color="#0284C7"))
+
+        c.execute("SELECT id, ad, tel, adres FROM musteriler ORDER BY id DESC")
+        musteri_listesi = c.fetchall()
         conn.close()
+
+        if not musteri_listesi:
+            icerik_alani.controls.append(ft.Text("Henüz kayıtlı müşteri bulunmuyor.", size=13, color="#64748B"))
+        else:
+            for mid, m_ad, m_tel, m_adr in musteri_listesi:
+                def teklife_sec(a=m_ad, t=m_tel, adr=m_adr):
+                    def _sec(ev):
+                        musteri_adi.value = a or ""
+                        musteri_tel.value = t or ""
+                        musteri_adres.value = adr or ""
+                        mesaj_goster(f"👤 '{a}' seçildi, teklif kalemlerini ekleyebilirsiniz!")
+                        goster_teklif_ekrani()
+                    return _sec
+
+                def sil_musteri(k_id=mid):
+                    def _sm(ev):
+                        conn2 = sqlite3.connect(DB_FILE)
+                        conn2.execute("DELETE FROM musteriler WHERE id=?", (k_id,))
+                        conn2.commit()
+                        conn2.close()
+                        goster_fiyat_listesi()
+                    return _sm
+
+                icerik_alani.controls.append(
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Column([
+                                ft.Text(f"👤 {m_ad} ({m_tel or 'Tel Yok'})", weight="bold", color="#0F172A"),
+                                ft.Text(f"📍 {m_adr}" if m_adr else "", size=12, color="#475569"),
+                            ], spacing=2, tight=True),
+                            ft.Row([
+                                ozel_buton("📝 Teklif Ver", teklife_sec(), "#0284C7", 6),
+                                ozel_buton("🗑️ Sil", sil_musteri(), "#DC2626", 6),
+                            ], spacing=6)
+                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True),
+                        padding=8, bgcolor="#E0F2FE", border_radius=6
+                    )
+                )
         page.update()
 
     def goster_ayarlar(e=None):
@@ -1271,7 +1425,7 @@ def main(page: ft.Page):
             ozel_buton("📝 1. Teklif", goster_teklif_ekrani, "#1E3A8A", 9),
             ozel_buton("📂 2. Arşiv", goster_gecmis_teklifler, "#0284C7", 9),
             ozel_buton("📒 3. Cari", goster_cari_ekrani, "#B45309", 9),
-            ozel_buton("📦 4. Fiyatlar", goster_fiyat_listesi, "#0F766E", 9),
+            ozel_buton("📦 4. Fiyat & Müşteri", goster_fiyat_listesi, "#0F766E", 9),
             ozel_buton("⚙️ 5. Firma/Pro", goster_ayarlar, "#6D28D9", 9),
         ], wrap=True, spacing=6),
         durum_mesaji,
