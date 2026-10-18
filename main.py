@@ -1,5 +1,7 @@
 import os
+import sys
 import json
+import random
 import shutil
 import sqlite3
 import tempfile
@@ -26,13 +28,21 @@ try:
 except ImportError:
     TKINTER_VAR = False
 
-# --- PRO AKTİVASYON ŞİFRESİ (Müşterilerine vereceğin lisans kodu) ---
-PRO_LISANS_KODU = "PRO2026"
+# =====================================================================
+# --- SATIŞ, FİYAT VE WHATSAPP AYARLARI (KENDİ NUMARANI BURAYA YAZ) ---
+# =====================================================================
+PRO_FIYAT_METNI = "499 TL (Tek Seferlik / Sınırsız Lisans)"
+SATIS_WHATSAPP_NO = "905000000000"  # Kendi WhatsApp numaranı başında 90 ile yaz
+PRO_ANA_SIFRE = "PRO2026"           # Senin genel yönetici şifren
 
+# Masaüstü (.exe) ve Android için doğru kayıt klasörünü otomatik bulur
 VERI_DIZINI = os.environ.get("FLET_APP_STORAGE_DATA")
 if not VERI_DIZINI:
     if os.name == "nt":
-        VERI_DIZINI = os.path.abspath(".")
+        if getattr(sys, "frozen", False):
+            VERI_DIZINI = os.path.dirname(sys.executable)
+        else:
+            VERI_DIZINI = os.path.dirname(os.path.abspath(__file__))
     else:
         VERI_DIZINI = tempfile.gettempdir()
 
@@ -41,6 +51,13 @@ LOGO_KLASORU = os.path.join(VERI_DIZINI, "logolar")
 ARSIV_KLASORU = os.path.join(VERI_DIZINI, "teklifler_arsiv")
 
 PDF_PORT = [0]
+
+
+def cihaza_ozel_sifre_uret(cihaz_kodu):
+    temiz = "".join(filter(str.isdigit, str(cihaz_kodu))) or "10000"
+    sayi = int(temiz)
+    ozel_kod = ((sayi * 73) + 1923) % 90000 + 10000
+    return f"TC-{ozel_kod}"
 
 
 def pdf_sunucu_baslat():
@@ -103,6 +120,8 @@ def init_db():
         c.execute("ALTER TABLE ayarlar ADD COLUMN gecerlilik TEXT DEFAULT '30 Gün'")
     if "firma_adres" not in sutunlar:
         c.execute("ALTER TABLE ayarlar ADD COLUMN firma_adres TEXT DEFAULT ''")
+    if "cihaz_kodu" not in sutunlar:
+        c.execute("ALTER TABLE ayarlar ADD COLUMN cihaz_kodu TEXT DEFAULT ''")
 
     c.execute("UPDATE ayarlar SET gecerlilik='30 Gün' WHERE gecerlilik='15 Gün' OR gecerlilik IS NULL OR gecerlilik=''")
 
@@ -131,14 +150,21 @@ def init_db():
     if "para_birimi" not in g_sutunlar:
         c.execute("ALTER TABLE gecmis_teklifler ADD COLUMN para_birimi TEXT DEFAULT 'TL'")
 
+    rastgele_cihaz = str(random.randint(10000, 99999))
     c.execute("SELECT COUNT(*) FROM ayarlar")
     if c.fetchone()[0] == 0:
         c.execute(
-            "INSERT INTO ayarlar (id, firma_adi, firma_tel, firma_iban, pro_mu, kalan_hak, logo_yolu, gecerlilik, firma_adres) "
-            "VALUES (1, 'Kurum / Firma Adınız', '0500 000 00 00', 'TR00 0000 0000 0000 0000 00', 0, 5, '', '30 Gün', '')"
+            "INSERT INTO ayarlar (id, firma_adi, firma_tel, firma_iban, pro_mu, kalan_hak, logo_yolu, gecerlilik, firma_adres, cihaz_kodu) "
+            "VALUES (1, 'Kurum / Firma Adınız', '0500 000 00 00', 'TR00 0000 0000 0000 0000 00', 0, 5, '', '30 Gün', '', ?)",
+            (rastgele_cihaz,)
         )
         ornekler = [("Örnek Hizmet / İşçilik", 1000.0), ("Malzeme Bedeli", 500.0)]
         c.executemany("INSERT INTO hazir_kalemler (ad, fiyat) VALUES (?, ?)", ornekler)
+    else:
+        c.execute("SELECT cihaz_kodu FROM ayarlar WHERE id=1")
+        mevcut_kod = c.fetchone()[0]
+        if not mevcut_kod:
+            c.execute("UPDATE ayarlar SET cihaz_kodu=? WHERE id=1", (rastgele_cihaz,))
 
     conn.commit()
     conn.close()
@@ -291,7 +317,6 @@ def _pdf_ciz(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tut
     pdf.set_text_color(80, 80, 80)
     pdf.cell(90, 6, yaz(f"Tarih: {datetime.now().strftime('%d.%m.%Y')}"), align="R")
 
-    # UZUN FİRMA İSMİ: Otomatik alt satıra iner ve sayfa ortasına hizalanır
     firma_y = 33 if logo_basildi else 24
     pdf.set_xy(10, firma_y)
     pdf.set_text_color(30, 58, 138)
@@ -391,7 +416,6 @@ def _pdf_ciz(ayar, musteri_adi, kalemler, ara_toplam, iskonto, kdv_oran, kdv_tut
     pdf.set_text_color(30, 58, 138)
     pdf.cell(kutu_w, 6, yaz("YETKİLİ KAŞE / İMZA"), align="C")
 
-    # Kaşe kutusunun içindeki uzun firma adı da ortalanarak alt satıra iner
     pdf.set_xy(kutu_x + 2, alt_y + 8)
     pdf.set_font(font_name, "", 7.5)
     pdf.set_text_color(90, 90, 90)
@@ -438,7 +462,7 @@ def ozel_buton(yazi, tiklama=None, renk="#1E3A8A", padding_degeri=10, url=None):
 def main(page: ft.Page):
     init_db()
     pdf_sunucu_baslat()
-    page.title = "TeklifCepte Pro v4.0"
+    page.title = "TeklifCepte Pro v4.2"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 12
     page.scroll = ft.ScrollMode.AUTO
@@ -482,7 +506,7 @@ def main(page: ft.Page):
     def get_ayarlar():
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
-        c.execute("SELECT firma_adi, firma_tel, firma_iban, pro_mu, kalan_hak, logo_yolu, gecerlilik, firma_adres FROM ayarlar WHERE id=1")
+        c.execute("SELECT firma_adi, firma_tel, firma_iban, pro_mu, kalan_hak, logo_yolu, gecerlilik, firma_adres, cihaz_kodu FROM ayarlar WHERE id=1")
         r = c.fetchone()
         conn.close()
         return {
@@ -494,6 +518,7 @@ def main(page: ft.Page):
             "logo_yolu": r[5] or "",
             "gecerlilik": r[6] or "30 Gün",
             "firma_adres": r[7] or "",
+            "cihaz_kodu": r[8] or "10000",
         }
 
     ust_logo_kutusu = ft.Container(width=50, height=50, bgcolor="#F1F5F9", border_radius=8, padding=4)
@@ -728,7 +753,7 @@ def main(page: ft.Page):
             yazili_kalemi_otomatik_ekle()
             ayar = get_ayarlar()
             if ayar["pro_mu"] == 0 and ayar["kalan_hak"] <= 0:
-                mesaj_goster("🔒 Ücretsiz 5 PDF hakkınız doldu! '5. Firma/Pro' sekmesinden Pro'ya geçin.", "#DC2626", "#FEE2E2")
+                mesaj_goster(f"🔒 Ücretsiz 5 PDF hakkınız doldu! '5. Firma/Pro' sekmesinden ({PRO_FIYAT_METNI}) Pro'ya geçin.", "#DC2626", "#FEE2E2")
                 return
             if not kalemler:
                 mesaj_goster("⚠️ Önce yukarıdaki hazır kalemlere dokunun veya hizmet ekleyin!", "#DC2626", "#FEE2E2")
@@ -793,7 +818,7 @@ def main(page: ft.Page):
                         ),
                         ft.Row([
                             ozel_buton(
-                                "📥 PDF Dosyasını Telefona İndir",
+                                "📥 PDF Dosyasını Aç / İndir",
                                 _indir_tikla,
                                 "#1E40AF",
                                 12,
@@ -812,7 +837,7 @@ def main(page: ft.Page):
                 )
             )
 
-            mesaj_goster("✅ Teklif hazırlandı! Aşağıdaki karttan indirebilir veya paylaşabilirsiniz.")
+            mesaj_goster("✅ Teklif hazırlandı! Aşağıdaki karttan açabilir veya paylaşabilirsiniz.")
             guncelle_teklif_ekrani()
             await cihazda_pdf_ac_async(dosya_yolu)
         except Exception as ex:
@@ -1032,7 +1057,7 @@ def main(page: ft.Page):
                 async def _wp(ev):
                     ayar_kontrol = get_ayarlar()
                     if ayar_kontrol["pro_mu"] == 0:
-                        mesaj_goster("🔒 WhatsApp Hatırlatma PRO özelliğidir! '5. Firma/Pro' sekmesinden Pro'yu açın.", "#DC2626", "#FEE2E2")
+                        mesaj_goster(f"🔒 WhatsApp Hatırlatma PRO özelliğidir! '5. Firma/Pro' sekmesinden ({PRO_FIYAT_METNI}) Pro'yu açın.", "#DC2626", "#FEE2E2")
                         return
                     if hedef:
                         await url_baslat(hedef)
@@ -1111,12 +1136,24 @@ def main(page: ft.Page):
     def goster_ayarlar(e=None):
         icerik_alani.controls.clear()
         ayar = get_ayarlar()
+        cihaz_no = ayar["cihaz_kodu"]
+        dogru_cihaz_sifresi = cihaza_ozel_sifre_uret(cihaz_no)
 
         f_adi = ft.TextField(label="Kendi Firma / Şirket / Usta Adınız", value=ayar["firma_adi"], width=320)
         f_tel = ft.TextField(label="İletişim Telefonunuz", value=ayar["firma_tel"], width=280)
         f_adres = ft.TextField(label="Firma Adresi / Vergi Dairesi (PDF'te Görünür)", value=ayar["firma_adres"], width=320)
         f_iban = ft.TextField(label="IBAN Numaranız (PDF'te Görünür)", value=ayar["firma_iban"], width=320)
         lisans_input = ft.TextField(label="🔑 PRO Aktivasyon Kodunuzu Girin", width=260)
+
+        satin_alma_mesaji = (
+            f"Merhaba, *TeklifCepte PRO* ({PRO_FIYAT_METNI}) lisans kodu satın almak istiyorum.\n"
+            f"Firma Adım: {ayar['firma_adi']}\n"
+            f"Cihaz Kodum: *{cihaz_no}*"
+        )
+        wp_satis_url = f"https://wa.me/{SATIS_WHATSAPP_NO}?text={urllib.parse.quote(satin_alma_mesaji)}"
+
+        async def wp_satis_ac(ev):
+            await url_baslat(wp_satis_url)
 
         def kaydet_ayar(ev):
             conn = sqlite3.connect(DB_FILE)
@@ -1130,7 +1167,13 @@ def main(page: ft.Page):
 
         def lisans_dogrula(ev):
             girilen = (lisans_input.value or "").strip().upper()
-            if girilen in [PRO_LISANS_KODU, "TEKLIF2026"]:
+            if girilen.startswith("URET-"):
+                musteri_cihaz = girilen.replace("URET-", "").strip()
+                uretilen = cihaza_ozel_sifre_uret(musteri_cihaz)
+                mesaj_goster(f"🔐 Müşteri ({musteri_cihaz}) İçin Özel PRO Şifresi: {uretilen}", "#1E40AF", "#DBEAFE")
+                return
+
+            if girilen in [PRO_ANA_SIFRE, dogru_cihaz_sifresi]:
                 conn = sqlite3.connect(DB_FILE)
                 conn.execute("UPDATE ayarlar SET pro_mu=1, kalan_hak=999 WHERE id=1")
                 conn.commit()
@@ -1139,7 +1182,7 @@ def main(page: ft.Page):
                 ust_bilgiyi_yenile()
                 goster_ayarlar()
             else:
-                mesaj_goster("⚠️ Geçersiz Lisans Kodu! Lütfen aktivasyon kodunuzu kontrol edin.", "#DC2626", "#FEE2E2")
+                mesaj_goster("⚠️ Geçersiz Lisans Kodu! Lütfen satın aldığınız aktivasyon kodunu kontrol edin.", "#DC2626", "#FEE2E2")
 
         def ucretsiz_don(ev):
             conn = sqlite3.connect(DB_FILE)
@@ -1149,6 +1192,43 @@ def main(page: ft.Page):
             mesaj_goster("ℹ️ Ücretsiz deneme sürümüne dönüldü.")
             ust_bilgiyi_yenile()
             goster_ayarlar()
+
+        pro_satis_karti = ft.Container(
+            content=ft.Column([
+                ft.Text("💎 TeklifCepte PRO Sürüm Paketi", size=17, weight="bold", color="#6D28D9"),
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text(f"🏷️ Paket Ücreti: {PRO_FIYAT_METNI}", size=16, weight="bold", color="#047857"),
+                        ft.Text(f"📱 Cihaz Lisans No: {cihaz_no} (Bu cihaza özeldir)", size=12, weight="bold", color="#475569"),
+                        ft.Divider(height=1),
+                        ft.Text("✔️ Sınırsız PDF Fiyat Teklifi Oluşturma", size=13, color="#1E293B"),
+                        ft.Text("✔️ PDF Altındaki 'Ücretsiz Hazırlanmıştır' Yazısını Kaldırma", size=13, color="#1E293B"),
+                        ft.Text("✔️ Cari Hesaplarda Tek Tıkla WhatsApp Borç Hatırlatma", size=13, color="#1E293B"),
+                        ft.Text("✔️ Kurumsal Logo, Kaşe ve Dövizli ($ / € / ₺) Teklif Desteği", size=13, color="#1E293B"),
+                    ], spacing=4, tight=True),
+                    padding=12, bgcolor="#FFFFFF", border_radius=8
+                ),
+                ozel_buton("💬 WhatsApp'tan PRO Lisans Satın Al (Havale / FAST)", wp_satis_ac, "#16A34A", 14, url=wp_satis_url),
+                ft.Divider(height=1),
+                ft.Text("WhatsApp'tan aldığınız aktivasyon şifresini aşağıya girin:", size=12, color="#475569", weight="bold"),
+                ft.Row([
+                    lisans_input,
+                    ozel_buton("🔓 PRO Sürümü Aktifleştir", lisans_dogrula, "#7C3AED", 12),
+                ], wrap=True, spacing=8),
+                alt_bildirim_kutusu,
+            ], spacing=8, tight=True),
+            padding=12, bgcolor="#F3E8FF", border_radius=10
+        )
+
+        pro_aktif_karti = ft.Container(
+            content=ft.Column([
+                ft.Text("💎 PRO SÜRÜM LİSANSINIZ AKTİF", size=16, weight="bold", color="#047857"),
+                ft.Text(f"Cihaz Lisans No: {cihaz_no} | Tüm sınırsız özellikler açık.", size=13, color="#1E293B"),
+                ozel_buton("🔄 Ücretsiz Sürüme Dön (Test İçin)", ucretsiz_don, "#64748B", 10),
+                alt_bildirim_kutusu,
+            ], spacing=8, tight=True),
+            padding=12, bgcolor="#DCFCE7", border_radius=10
+        )
 
         icerik_alani.controls.extend([
             ft.Container(
@@ -1165,22 +1245,7 @@ def main(page: ft.Page):
                 padding=12, bgcolor="#F8FAFC", border_radius=10
             ),
             ft.Divider(),
-            ft.Container(
-                content=ft.Column([
-                    ft.Text("💎 PRO Lisans ve Paket Yönetimi", size=16, weight="bold", color="#7C3AED"),
-                    ft.Text(
-                        "Durum: 💎 PRO SÜRÜM AKTİF (Sınırsız PDF + Filigransız + WP Cari Hatırlatma)"
-                        if ayar["pro_mu"] == 1 else
-                        f"Durum: 🎁 Ücretsiz Deneme (Kalan Hak: {ayar['kalan_hak']}/5 PDF)",
-                        weight="bold", color="#047857" if ayar["pro_mu"] == 1 else "#B45309"
-                    ),
-                    ft.Row([
-                        lisans_input,
-                        ozel_buton("🔓 PRO Sürümü Aktifleştir", lisans_dogrula, "#7C3AED", 12),
-                    ], wrap=True, spacing=8) if ayar["pro_mu"] == 0 else ozel_buton("🔄 Ücretsiz Sürüme Dön (Test İçin)", ucretsiz_don, "#64748B", 10),
-                ], spacing=8, tight=True),
-                padding=12, bgcolor="#F3E8FF", border_radius=10
-            )
+            pro_aktif_karti if ayar["pro_mu"] == 1 else pro_satis_karti,
         ])
         page.update()
 
