@@ -23,33 +23,48 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: 4. Imza Klasor Izinlerini Ac ve Flet Kur
+      - name: 4. Paketleri ve Resmi Google Play Imzasini Hazirla
         run: |
+          printf "flet\nfpdf2\n" > requirements.txt
+          sudo apt-get update && sudo apt-get install -y fonts-dejavu-core zip
+          if [ ! -f font.ttf ]; then cp /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf font.ttf; fi
+          if [ ! -f font_bold.ttf ]; then cp /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf font_bold.ttf; fi
           mkdir -p /home/runner/.android /home/runner/.config/.android
           sudo chown -R $USER:$USER /home/runner/.android /home/runner/.config
           chmod -R 777 /home/runner/.android /home/runner/.config/.android
           keytool -genkey -v -keystore /home/runner/.config/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" || true
           cp /home/runner/.config/.android/debug.keystore /home/runner/.android/debug.keystore || true
+          if [ ! -f release.keystore ]; then
+            keytool -genkey -v -keystore release.keystore -storepass teklif2026 -alias teklifcepte_key -keypass teklif2026 -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=TeklifCepte Pro, OU=Yazilim, O=TeklifCepte, L=Istanbul, S=Istanbul, C=TR"
+          fi
           yes | sudo $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
           pip install --upgrade pip
-          pip install "flet[all]" fpdf2 Pillow
+          pip install "flet[all]" fpdf2
 
-      - name: 5. Android APK Derle (Otomatik Onayli)
+      - name: 5. Android APK Derle (Telefon Icin)
         env:
           CI: true
         run: |
-          yes | flet build apk --yes --project teklifcepte --org com.teklifcepte.pro
+          set +o pipefail
+          python3 -m py_compile main.py
+          yes | flet build apk --yes --project teklifcepte --org com.teklifcepte.pro --build-number 2 --build-version 1.0.2
 
-      - name: 6. Google Play AAB Derle (Otomatik Onayli)
+      - name: 6. Google Play AAB Derle ve Resmi Imzala (Magaza Icin)
         env:
           CI: true
         run: |
-          yes | flet build aab --yes --project teklifcepte --org com.teklifcepte.pro
+          set +o pipefail
+          yes | flet build aab --yes --project teklifcepte --org com.teklifcepte.pro --build-number 2 --build-version 1.0.2
+          for aab_file in build/aab/*.aab; do
+            zip -d "$aab_file" "META-INF/*" || true
+            jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 -keystore release.keystore -storepass teklif2026 -keypass teklif2026 "$aab_file" teklifcepte_key
+          done
 
-      - name: 7. Hazir Paketleri Indirmeye Sun
+      - name: 7. Hazir Paketleri ve Anahtari Indirmeye Sun
         uses: actions/upload-artifact@v4
         with:
           name: TeklifCepte-Android-Paketleri
           path: |
             build/apk/*.apk
             build/aab/*.aab
+            release.keystore
